@@ -1,1 +1,111 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --theme-primary: #6366f1;
+  --theme-secondary: #38bdf8;
+  --theme-success: #10b981;
+  --theme-warning: #f59e0b;
+  --theme-error: #ef4444;
+  --theme-bg: #020617;
+  --theme-card-bg: #0f172a;
+  --theme-button-bg: #4f46e5;
+  --theme-text: #f8fafc;
+  --theme-icon: #818cf8;
+  --theme-table-bg: #020617;
+  --theme-radius: 16px;
+}
+
+@layer base {
+  body {
+    background-color: var(--theme-bg, #020617);
+    color: var(--theme-text, #f8fafc);
+    overflow-y: auto;
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+}
+
+/* Theme utility classes */
+.app-theme-bg {
+  background-color: var(--theme-bg, #020617) !important;
+}
+
+.app-theme-card {
+  background-color: var(--theme-card-bg, #0f172a) !important;
+}
+
+.app-theme-button {
+  background-color: var(--theme-button-bg, #4f46e5) !important;
+}
+
+.app-theme-text {
+  color: var(--theme-text, #f8fafc) !important;
+}
+
+.app-theme-primary {
+  color: var(--theme-primary, #6366f1) !important;
+}
+
+/* Custom premium glow animations and card designs */
+@keyframes soft-pulse {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.03);
+  }
+}
+
+.animate-soft-pulse {
+  animation: soft-pulse 4s infinite ease-in-out;
+}
+
+/* Global Scrollbar design token integration */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--theme-bg, #020617);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--theme-card-bg, #1e293b);
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-primary, #6366f1);
+}
+
+/* Global Form Controls & Inputs integration */
+input, select, textarea {
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+
+/* Global Table design token integration */
+table {
+  background-color: var(--theme-table-bg, #020617);
+  color: var(--theme-text, #f8fafc);
+}
+
+/* Smooth custom cursor and hover styles */
+.smooth-hover {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Global Card & Modal Border Radius Token */
+.theme-rounded {
+  border-radius: var(--theme-radius, 16px);
+}
+

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Keyboard, Hash, Sparkles } from 'lucide-react';
+import { Keyboard, Hash, CheckCircle, Smartphone } from 'lucide-react';
 
 interface ManualInputProps {
   onAddTicket: (num: string) => void;
@@ -8,6 +8,7 @@ interface ManualInputProps {
 
 export default function ManualInput({ onAddTicket, disabled = false }: ManualInputProps) {
   const [value, setValue] = useState('');
+  const [justAdded, setJustAdded] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Keep focus active
@@ -22,8 +23,6 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
     if (disabled) return;
     
     const handleGlobalClick = (e: MouseEvent) => {
-      // If user clicked another interactive element like buttons, settings inputs, select fields, etc.
-      // don't steal focus. Otherwise, bring focus back to the ticket input.
       const target = e.target as HTMLElement;
       if (
         target.tagName === 'INPUT' || 
@@ -51,7 +50,6 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let val = e.target.value.replace(/\D/g, ''); // numbers only
     
-    // Limit to 3 digits (or we can let it be larger if needed, but spec says "En el momento en que se introduce el tercer dígito el ticket se añade automáticamente")
     if (val.length > 3) {
       val = val.slice(0, 3);
     }
@@ -61,8 +59,15 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
     if (val.length === 3) {
       // Add instantly!
       onAddTicket(val);
+      setJustAdded(val);
       setValue('');
-      // Force refocus just in case
+      
+      // Auto-clear success state after 700ms
+      setTimeout(() => {
+        setJustAdded(null);
+      }, 700);
+
+      // Force refocus
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.focus();
@@ -72,21 +77,29 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // Esc → Limpiar la Entrada Rápida
     if (e.key === 'Escape') {
       setValue('');
       e.preventDefault();
       return;
     }
 
+    if (e.key === 'Enter') {
+      if (value.trim()) {
+        onAddTicket(value);
+        setJustAdded(value);
+        setValue('');
+        setTimeout(() => setJustAdded(null), 700);
+      }
+      e.preventDefault();
+      return;
+    }
+
     const isDigit = /^[0-9]$/.test(e.key);
     
-    // Allow modifier keys (Ctrl+A, etc.)
     if (e.ctrlKey || e.altKey || e.metaKey) {
       return;
     }
 
-    // List of keys allowed to perform their native editing behaviors inside the input
     const isAllowedEditingKey = [
       'Backspace',
       'Delete',
@@ -95,37 +108,45 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
     ].includes(e.key);
 
     if (isDigit || isAllowedEditingKey) {
-      // Allow these native input keys
       return;
     }
 
-    // For any other key (like Enter, Space, ArrowUp, ArrowDown, Tab, letters),
-    // we prevent default so they do NOT affect the text value of the input or lose focus.
-    // However, they will still bubble up so the global shortcut handlers in App.tsx can capture and execute them!
     e.preventDefault();
   };
 
+  // Quick helper to fill the ATM-style visual slots
+  const visualSlots = ['', '', ''];
+  for (let i = 0; i < 3; i++) {
+    if (i < value.length) {
+      visualSlots[i] = value[i];
+    } else {
+      visualSlots[i] = '_';
+    }
+  }
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden group">
-      {/* Background glow decorator */}
-      <div className="absolute -right-20 -top-20 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl group-hover:bg-emerald-500/15 transition-all duration-500"></div>
+    <div className="relative overflow-hidden rounded-3xl border border-slate-800/60 bg-slate-900/40 backdrop-blur-md p-6 shadow-2xl transition-all duration-300 hover:border-slate-700/60">
+      {/* Background glow effects to represent premium KDS screen */}
+      <div className="absolute -left-12 -bottom-12 w-40 h-40 bg-violet-500/5 rounded-full blur-3xl"></div>
+      <div className="absolute -right-12 -top-12 w-40 h-40 bg-emerald-500/5 rounded-full blur-3xl"></div>
       
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
-            <Hash size={20} />
+        <div className="flex items-center gap-2.5">
+          <div className="p-2.5 bg-violet-500/10 text-violet-400 rounded-xl border border-violet-500/20 shadow-inner">
+            <Hash size={18} className="animate-pulse" />
           </div>
           <div>
-            <h3 className="font-semibold text-slate-100 text-lg">Entrada Rápida</h3>
-            <p className="text-xs text-slate-400">Sin Enter. Al 3er dígito se añade solo.</p>
+            <h3 className="font-display font-bold text-slate-100 text-lg leading-tight">Caja de Entrada Rápida</h3>
+            <p className="text-xs text-slate-400 font-medium">Detector instantáneo sin confirmación</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 border border-slate-700/50 rounded-full text-[10px] text-slate-400 font-mono">
-          <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></div>
-          Cursor Activo
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-950/30 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-full shadow-sm">
+          <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping"></span>
+          <span>CURSORES LISTOS</span>
         </div>
       </div>
 
+      {/* Main interactive slot input area */}
       <div className="relative">
         <input
           id="fast-ticket-input"
@@ -133,40 +154,70 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
           type="text"
           inputMode="numeric"
           pattern="[0-9]*"
-          placeholder="Escribe 3 números..."
+          placeholder=""
           value={value}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           disabled={disabled}
-          className="w-full text-center bg-slate-950 text-slate-100 text-5xl font-mono tracking-widest font-bold py-6 px-4 rounded-xl border-2 border-slate-800 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 outline-none transition-all placeholder:text-slate-700 placeholder:text-2xl"
+          className="absolute inset-0 w-full h-full opacity-0 cursor-default"
           autoFocus
         />
-        
-        {value.length > 0 && (
-          <div className="absolute right-4 top-1/2 -translate-y-1/2 flex gap-1 text-xs text-emerald-400 font-mono">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div 
-                key={i} 
-                className={`w-2.5 h-2.5 rounded-full transition-all duration-200 ${
-                  i < value.length ? 'bg-emerald-400 scale-110 shadow-sm' : 'bg-slate-800'
-                }`}
-              />
-            ))}
+
+        {/* Overlay showing "Just Added" status */}
+        {justAdded ? (
+          <div className="w-full flex items-center justify-center bg-emerald-500/15 border-2 border-emerald-500/30 rounded-2xl py-6 animate-[scaleUp_0.15s_ease-out] shadow-lg shadow-emerald-500/5">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="text-emerald-400 animate-[bounce_0.6s_infinite]" size={32} />
+              <div className="flex flex-col">
+                <span className="font-display font-extrabold text-3xl text-emerald-300 tracking-tight">#{justAdded}</span>
+                <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-widest">Ticket Añadido</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* High-fidelity ATMs / POS slots */
+          <div 
+            onClick={() => inputRef.current?.focus()}
+            className="w-full grid grid-cols-3 gap-3.5 py-3 cursor-text select-none"
+          >
+            {visualSlots.map((char, index) => {
+              const isActive = index === value.length;
+              return (
+                <div
+                  key={index}
+                  className={`relative flex items-center justify-center rounded-2xl py-4 h-24 border transition-all duration-200 ${
+                    char !== '_'
+                      ? 'bg-slate-950 border-violet-500/40 text-slate-100 shadow-lg shadow-violet-500/5'
+                      : isActive
+                      ? 'bg-slate-950/80 border-violet-500 text-violet-400 ring-2 ring-violet-500/20 scale-102'
+                      : 'bg-slate-950/40 border-slate-800/80 text-slate-700'
+                  }`}
+                >
+                  <span className="font-mono font-black text-4xl tracking-tighter">
+                    {char}
+                  </span>
+                  {isActive && (
+                    <span className="absolute bottom-3 w-5 h-1 bg-violet-400 rounded-full animate-pulse"></span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
 
-      <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
-        <div className="flex items-center gap-1">
-          <Keyboard size={14} className="text-slate-400" />
-          <span>Escribe p.ej. <span className="font-mono text-slate-300">183</span> para añadir instantáneo</span>
+      <div className="mt-4 flex items-center justify-between text-[11px] text-slate-500">
+        <div className="flex items-center gap-1.5 font-medium">
+          <Keyboard size={13} className="text-slate-400 shrink-0" />
+          <span>Escribe 3 números y se publicará en pantallas de inmediato</span>
         </div>
-        {value.length > 0 && (
-          <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-300 font-mono">
-            {value.length}/3 dígitos
+        {value.length > 0 && !justAdded && (
+          <span className="bg-violet-950/40 border border-violet-500/20 text-violet-300 font-mono font-bold px-2.5 py-0.5 rounded-full">
+            {value.length} / 3 dígitos
           </span>
         )}
       </div>
     </div>
   );
 }
+

@@ -1,5 +1,5 @@
 {
-  "name": "Gestor de Tickets para Restaurante",
+  "name": "Gestor y Pantalla de Tickets de Restaurante",
   "description": "Gestor de tickets ultra-rápido con OCR, anuncios de voz, música de fondo y arquitectura distribuida Cliente-Servidor (PC de Control + Tablets mandos a distancia).",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

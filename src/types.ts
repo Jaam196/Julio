@@ -10,6 +10,7 @@ export interface Ticket {
   recoveredAt?: number;
   deliveredAt?: number;
   deletedAt?: number;
+  isPriority?: boolean;
 }
 
 export type PhraseTypeEs = 
@@ -53,6 +54,7 @@ export interface ShortcutConfig {
   focusInput: string;     // default: 'Escape'
   pauseResumeOcr: string; // default: 'KeyP'
   activateSelected: string; // default: 'KeyA'
+  pauseResumeWaitlist: string; // default: 'KeyQ'
 }
 
 export interface AppConfig {
@@ -63,6 +65,58 @@ export interface AppConfig {
   pendingSelectedColor?: string; // hex string, default amber
   demoteActivePosition?: 'start' | 'end'; // default: 'start'
   autoActivateFirstTicket?: boolean; // default: true
+  ocrInputMode?: 'waiting' | 'direct_listos' | 'auto_ia'; // default: 'direct_listos'
+  activeSwipeAction?: 'pending' | 'delivered'; // default: 'pending'
+  missingRecoveryAction?: 'active' | 'waiting'; // default: 'active'
+  publicDisplayTitle?: string; // default: '¡Pedido listo!'
+  publicDisplayMessage?: string; // default: 'Puede recoger su pedido'
+  publicDisplayThemePreset?: 'black-yellow' | 'black-white' | 'darkblue-white' | 'darkred-white' | 'darkgreen-white' | 'custom';
+  publicDisplayBg?: string;
+  publicDisplayTextColor?: string;
+  publicDisplayTitleColor?: string;
+  publicDisplayShowMessage?: boolean;
+  
+  // Enhanced Public Display and Standby settings:
+  publicDisplayBgType?: 'color' | 'image' | 'video';
+  publicDisplayBgImage?: string;
+  publicDisplayBgVideo?: string;
+  publicDisplayLogo?: string;
+  publicDisplayFontFamily?: 'inter' | 'space-grotesk' | 'mono' | 'serif';
+  publicDisplayNumberSize?: 'normal' | 'large' | 'massive';
+  publicDisplayAnimation?: 'fade' | 'slide' | 'scale' | 'spring';
+  publicDisplayNoTicketsMessage?: string;
+  publicDisplayThemeMode?: 'dark' | 'light';
+  publicDisplayLanguage?: 'en' | 'es' | 'ca' | 'fr' | 'it' | 'de' | 'pt';
+  
+  // Standby mode slideshow settings:
+  publicDisplayStandbyEnabled?: boolean;
+  publicDisplayStandbyImages?: { id: string; url: string; active: boolean }[];
+  publicDisplayBgVideos?: { id: string; url: string; active: boolean; name: string }[];
+  publicDisplayStandbyDuration?: number; // duration in seconds (3 to 30)
+  publicDisplayStandbyFit?: 'cover' | 'contain';
+  publicDisplayHideBgOnActive?: boolean;
+  publicDisplayDiagnosticEnabled?: boolean;
+
+  // Multi-Ticket Board settings:
+  publicDisplayMainColor?: string;
+  publicDisplayListColor?: string;
+  publicDisplayNewColor?: string;
+  publicDisplayOldColor?: string;
+  publicDisplayMaxTickets?: number;
+  publicDisplayColumns?: number;
+  publicDisplayListNumberSize?: 'small' | 'medium' | 'large';
+  publicDisplayListPosition?: 'bottom' | 'side-right' | 'side-left';
+  publicDisplayShowMain?: boolean;
+  publicDisplayLayoutMode?: 'list-only' | 'list-main' | 'restaurant-2.0';
+}
+
+export interface AuthorizedDevice {
+  id: string;
+  name: string;
+  type: string; // 'Móvil' | 'Tablet' | 'TV' | 'PC'
+  status: 'authorized' | 'blocked';
+  remember: boolean;
+  lastConnected?: string;
 }
 
 export interface MusicConfig {
@@ -71,6 +125,7 @@ export interface MusicConfig {
   autoResume: boolean; // Reanudar automáticamente: true/false
   infinitePlay: boolean; // Reproducción infinita: true/false
   shuffle: boolean; // Playlist aleatoria: true/false
+  resumePlaylistProgress?: boolean; // Recordar y reanudar punto de reproducción
   integratedEnabled: boolean;
   integratedUrl: string;
   integratedVolume: number; // 0 to 100, default 80

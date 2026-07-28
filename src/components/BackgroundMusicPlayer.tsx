@@ -3,7 +3,7 @@ import { musicController } from '../utils/musicController';
 import { MusicConfig } from '../types';
 import { 
   Play, Pause, SkipForward, SkipBack, Music, Volume2, Volume1, VolumeX,
-  Youtube, List, Disc, ChevronDown, ChevronUp, Link2
+  Youtube, List, Disc, ChevronDown, ChevronUp, Link2, Search, Loader2, X
 } from 'lucide-react';
 
 interface BackgroundMusicPlayerProps {
@@ -33,6 +33,107 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
   const [customUrl, setCustomUrl] = useState(musicConfig.integratedUrl);
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [showVideo, setShowVideo] = useState(true);
+
+  // YouTube Browser State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [continuationToken, setContinuationToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [activeTab, setActiveTab] = useState<'presets' | 'search'>('presets');
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  const performSearch = async (query: string, isLoadMore = false) => {
+    if (!query.trim()) return;
+
+    if (isLoadMore) {
+      if (isLoadingMore || !continuationToken) return;
+      setIsLoadingMore(true);
+    } else {
+      if (isLoading) return;
+      setIsLoading(true);
+      setSearchError(null);
+      localStorage.setItem('yt_last_search', query);
+    }
+
+    try {
+      let url = `/api/youtube/search?query=${encodeURIComponent(query)}`;
+      if (isLoadMore && continuationToken) {
+        url += `&continuation=${encodeURIComponent(continuationToken)}`;
+      }
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Error del servidor (${res.status})`);
+      }
+      const data = await res.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      if (isLoadMore) {
+        setSearchResults(prev => [...prev, ...(data.items || [])]);
+      } else {
+        setSearchResults(data.items || []);
+        setActiveTab('search');
+      }
+      setContinuationToken(data.continuationToken || null);
+    } catch (err: any) {
+      console.warn('YouTube search fallback triggered:', err?.message || err);
+      if (!isLoadMore) {
+        const fallbackPresets = [
+          { id: 'jfKfPfyJRdk', type: 'video', title: '☕ Lofi Girl - lofi hip hop radio - beats to relax/study to', thumbnail: 'https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg', channel: 'Lofi Girl', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk' },
+          { id: 'Dx5_wdKkpBY', type: 'video', title: '🎷 Relaxing Jazz Music - Smooth Coffee Shop BGM', thumbnail: 'https://i.ytimg.com/vi/Dx5_wdKkpBY/hqdefault.jpg', channel: 'Cafe Music BGM', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=Dx5_wdKkpBY' },
+          { id: '5grNis6L_oI', type: 'video', title: '🏖️ Bossa Nova Jazz Music - Soft Lounge Restaurant', thumbnail: 'https://i.ytimg.com/vi/5grNis6L_oI/hqdefault.jpg', channel: 'Relaxing Bossa', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=5grNis6L_oI' },
+          { id: 'y7e-GC6oGIZ', type: 'video', title: '🎹 Piano Clásico y Relajante para Restaurantes', thumbnail: 'https://i.ytimg.com/vi/y7e-GC6oGIZ/hqdefault.jpg', channel: 'Relaxing Piano', duration: '3:00:00', url: 'https://www.youtube.com/watch?v=y7e-GC6oGIZ' },
+          { id: 'vV77mrc3lP0', type: 'video', title: '🍔 Pop y Música Alegre Ambiental', thumbnail: 'https://i.ytimg.com/vi/vV77mrc3lP0/hqdefault.jpg', channel: 'Background Chill', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=vV77mrc3lP0' },
+          { id: '4xDzrJKXOOY', type: 'video', title: '🌌 Synthwave Chill & Chillwave Beats', thumbnail: 'https://i.ytimg.com/vi/4xDzrJKXOOY/hqdefault.jpg', channel: 'Lofi Records', duration: '2:45:00', url: 'https://www.youtube.com/watch?v=4xDzrJKXOOY' }
+        ];
+        setSearchResults(fallbackPresets);
+        setActiveTab('search');
+        setSearchError('Búsqueda directa en directo limitada. Se muestran emisoras recomendadas.');
+      }
+    } finally {
+      setIsLoading(false);
+      setIsLoadingMore(false);
+    }
+  };
+
+  // Load last search on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('yt_last_search');
+    if (saved) {
+      setSearchQuery(saved);
+      setActiveTab('search');
+      performSearch(saved, false);
+    }
+  }, []);
+
+  const handleLoadMore = () => {
+    if (continuationToken && !isLoadingMore) {
+      performSearch(searchQuery, true);
+    }
+  };
+
+  // Debounce search input
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setContinuationToken(null);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      // Only auto search if we have typed something different than what is already saved, or if results are empty
+      const saved = localStorage.getItem('yt_last_search') || '';
+      if (searchQuery !== saved || searchResults.length === 0) {
+        performSearch(searchQuery, false);
+      }
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Sync state with musicController subscriptions
   useEffect(() => {
@@ -193,6 +294,48 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
         </div>
       </div>
 
+      {/* YouTube Integrated Search Bar */}
+      <div className="mb-4">
+        <form onSubmit={(e) => { e.preventDefault(); performSearch(searchQuery, false); }} className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              placeholder="🔍 Buscar en YouTube (canciones, artistas, listas...)"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-10 py-2.5 text-xs text-slate-100 outline-none focus:border-red-600 transition-colors placeholder:text-slate-500"
+            />
+            <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">
+              {isLoading ? (
+                <Loader2 size={14} className="animate-spin text-red-500" />
+              ) : (
+                <Search size={14} />
+              )}
+            </div>
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSearchResults([]);
+                  setContinuationToken(null);
+                  setActiveTab('presets');
+                }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <button
+            type="submit"
+            className="px-4 py-2.5 bg-red-600 hover:bg-red-500 border border-red-500/50 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-red-600/10 active:scale-95 shrink-0"
+          >
+            Buscar
+          </button>
+        </form>
+      </div>
+
       {/* Album Art & Title Panel */}
       <div className="bg-slate-950 rounded-xl p-3 border border-slate-800/40 flex items-center gap-3.5 mb-4">
         {/* Vinyl Disc Icon */}
@@ -330,89 +473,240 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
 
         {showPlaylists && (
           <div className="space-y-3 pt-1 animate-fadeIn">
-            {/* YouTube Presets */}
-            <div className="space-y-1">
-              <span className="text-[10px] font-bold text-red-400 font-mono flex items-center gap-1">
-                <Youtube size={10} />
-                YouTube Radios & Playlists
-              </span>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {YOUTUBE_PRESETS.map((preset) => {
-                  const isActive = musicConfig.integratedUrl === preset.url;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => selectPreset(preset.url)}
-                      className={`px-2.5 py-1.5 rounded-lg text-left text-xs font-semibold transition-all border ${
-                        isActive 
-                          ? 'bg-red-950/40 border-red-800 text-red-300 shadow-sm'
-                          : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-950/80'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Standard Audio Presets */}
-            <div className="space-y-1 pt-1">
-              <span className="text-[10px] font-bold text-indigo-400 font-mono flex items-center gap-1">
-                <Music size={10} />
-                Audio Directo (Lofi MP3)
-              </span>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {AUDIO_PRESETS.map((preset) => {
-                  const isActive = musicConfig.integratedUrl === preset.url;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => selectPreset(preset.url)}
-                      className={`px-2.5 py-1.5 rounded-lg text-left text-xs font-semibold transition-all border ${
-                        isActive 
-                          ? 'bg-indigo-950/40 border-indigo-800 text-indigo-300 shadow-sm'
-                          : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-950/80'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Custom URL Option */}
-            <div className="pt-1.5">
+            {/* Tabs Bar */}
+            <div className="flex border-b border-slate-800/60 pb-1.5 mb-2 gap-1.5">
               <button
                 type="button"
-                onClick={() => setShowCustomInput(!showCustomInput)}
-                className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-semibold cursor-pointer underline underline-offset-2"
+                onClick={() => setActiveTab('presets')}
+                className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                  activeTab === 'presets'
+                    ? 'bg-slate-800 text-slate-100 border border-slate-700/50'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                <Link2 size={10} />
-                {showCustomInput ? 'Ocultar entrada de link' : 'Insertar enlace de YouTube personalizado u MP3...'}
+                Radios y Presets
               </button>
-
-              {showCustomInput && (
-                <form onSubmit={submitCustomUrl} className="mt-2 flex gap-1.5 animate-fadeIn">
-                  <input
-                    type="text"
-                    placeholder="Pega link de YouTube, Shorts, Live, playlist o .mp3..."
-                    value={customUrl}
-                    onChange={(e) => setCustomUrl(e.target.value)}
-                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-100 outline-none focus:border-indigo-500 font-mono"
-                  />
-                  <button
-                    type="submit"
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 border border-indigo-500/50 text-white rounded-lg text-[10px] font-bold cursor-pointer"
-                  >
-                    Cargar
-                  </button>
-                </form>
-              )}
+              
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('search');
+                  if (searchQuery && searchResults.length === 0) {
+                    performSearch(searchQuery, false);
+                  }
+                }}
+                className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                  activeTab === 'search'
+                    ? 'bg-red-950/50 text-red-300 border border-red-900/50'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Youtube size={12} className="text-red-500" />
+                Búsqueda {searchResults.length > 0 ? `(${searchResults.length})` : ''}
+              </button>
             </div>
+
+            {/* Back to search results button if we are looking at presets */}
+            {activeTab === 'presets' && searchResults.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('search')}
+                className="w-full mb-3 py-1.5 px-3 bg-red-950/20 hover:bg-red-950/40 border border-red-900/40 rounded-xl text-[11px] font-bold text-red-400 hover:text-red-300 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              >
+                <Search size={12} className="text-red-500 animate-pulse" />
+                Volver a Resultados de Búsqueda ("{searchQuery}")
+              </button>
+            )}
+
+            {activeTab === 'presets' ? (
+              <>
+                {/* YouTube Presets */}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-red-400 font-mono flex items-center gap-1">
+                    <Youtube size={10} />
+                    YouTube Radios & Playlists
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {YOUTUBE_PRESETS.map((preset) => {
+                      const isActive = musicConfig.integratedUrl === preset.url;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => selectPreset(preset.url)}
+                          className={`px-2.5 py-1.5 rounded-lg text-left text-xs font-semibold transition-all border cursor-pointer ${
+                            isActive 
+                              ? 'bg-red-950/40 border-red-800 text-red-300 shadow-sm'
+                              : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-950/80'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Standard Audio Presets */}
+                <div className="space-y-1 pt-1">
+                  <span className="text-[10px] font-bold text-indigo-400 font-mono flex items-center gap-1">
+                    <Music size={10} />
+                    Audio Directo (Lofi MP3)
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {AUDIO_PRESETS.map((preset) => {
+                      const isActive = musicConfig.integratedUrl === preset.url;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => selectPreset(preset.url)}
+                          className={`px-2.5 py-1.5 rounded-lg text-left text-xs font-semibold transition-all border cursor-pointer ${
+                            isActive 
+                              ? 'bg-indigo-950/40 border-indigo-800 text-indigo-300 shadow-sm'
+                              : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-950/80'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Custom URL Option */}
+                <div className="pt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomInput(!showCustomInput)}
+                    className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-semibold cursor-pointer underline underline-offset-2"
+                  >
+                    <Link2 size={10} />
+                    {showCustomInput ? 'Ocultar entrada de link' : 'Insertar enlace de YouTube personalizado u MP3...'}
+                  </button>
+
+                  {showCustomInput && (
+                    <form onSubmit={submitCustomUrl} className="mt-2 flex gap-1.5 animate-fadeIn">
+                      <input
+                        type="text"
+                        placeholder="Pega link de YouTube, Shorts, Live, playlist o .mp3..."
+                        value={customUrl}
+                        onChange={(e) => setCustomUrl(e.target.value)}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-100 outline-none focus:border-indigo-500 font-mono"
+                      />
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 border border-indigo-500/50 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                      >
+                        Cargar
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="space-y-3">
+                {searchError ? (
+                  <div className="text-center py-8 text-red-400 text-xs flex flex-col items-center gap-2.5">
+                    <span className="text-2xl">⚠️</span>
+                    <p className="font-semibold leading-relaxed px-4 text-slate-300">{searchError}</p>
+                    <button
+                      type="button"
+                      onClick={() => performSearch(searchQuery, false)}
+                      className="px-3 py-1.5 bg-red-950/40 hover:bg-red-950/60 border border-red-900/80 rounded-lg text-[10px] font-bold text-red-300 transition-colors cursor-pointer"
+                    >
+                      Reintentar búsqueda
+                    </button>
+                  </div>
+                ) : searchResults.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs">
+                    {isLoading ? (
+                      <div className="flex flex-col items-center gap-2">
+                        <Loader2 size={20} className="animate-spin text-red-500" />
+                        <span>Buscando en YouTube...</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-1">
+                        <Youtube size={24} className="text-slate-600 mb-1" />
+                        <span>Escribe un término en el buscador para ver resultados</span>
+                        <span className="text-[10px] text-slate-600">Ej: Bad Bunny, Queen, Música relajante...</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div 
+                    className="max-h-[300px] overflow-y-auto space-y-2 pr-1 scrollbar-thin"
+                    onScroll={(e) => {
+                      const target = e.currentTarget;
+                      if (target.scrollHeight - target.scrollTop <= target.clientHeight + 40) {
+                        handleLoadMore();
+                      }
+                    }}
+                  >
+                    {searchResults.map((item) => {
+                      const isCurrentlyPlaying = musicConfig.integratedUrl === item.url;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => selectPreset(item.url)}
+                          className={`w-full text-left p-2 rounded-xl transition-all border flex gap-3 text-xs items-start cursor-pointer ${
+                            isCurrentlyPlaying
+                              ? 'bg-red-950/40 border-red-800 text-red-200'
+                              : 'bg-slate-950/50 border-slate-900 text-slate-300 hover:bg-slate-900 hover:border-slate-800'
+                          }`}
+                        >
+                          {/* Thumbnail with duration badge */}
+                          <div className="relative shrink-0 w-24 aspect-video rounded overflow-hidden bg-slate-900 border border-slate-850">
+                            <img 
+                              src={item.thumbnail} 
+                              alt={item.title} 
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover" 
+                            />
+                            {item.duration && (
+                              <span className="absolute bottom-1 right-1 px-1 py-0.5 text-[8px] font-bold font-mono bg-black/80 text-slate-200 rounded">
+                                {item.duration}
+                              </span>
+                            )}
+                            {item.type === 'playlist' && (
+                              <div className="absolute top-0 right-0 bottom-0 left-1/2 bg-black/60 flex flex-col items-center justify-center text-[9px] font-bold text-white border-l border-white/10">
+                                <List size={10} className="mb-0.5" />
+                                <span>Lista</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex-1 min-w-0 pr-1">
+                            <h4 className="font-semibold text-slate-100 leading-snug line-clamp-2" title={item.title}>
+                              {item.title}
+                            </h4>
+                            <p className="text-[10px] text-slate-400 mt-1 truncate">
+                              {item.channel}
+                            </p>
+                            {isCurrentlyPlaying && (
+                              <span className="inline-flex items-center gap-1 mt-1.5 px-1.5 py-0.5 rounded text-[8px] font-bold font-mono bg-red-950 text-red-400 border border-red-900/60 animate-pulse">
+                                <span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span>
+                                Sonando
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+
+                    {/* Infinite Scroll loading indicator */}
+                    {isLoadingMore && (
+                      <div className="flex items-center justify-center gap-2 py-3 text-xs text-slate-400">
+                        <Loader2 size={14} className="animate-spin text-red-500" />
+                        <span>Cargando más resultados...</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

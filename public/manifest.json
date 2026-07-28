@@ -1,0 +1,21 @@
+{
+  "short_name": "GestorTurnos",
+  "name": "Gestor y Pantalla de Tickets de Restaurante",
+  "icons": [
+    {
+      "src": "https://img.icons8.com/fluency/192/000000/restaurant-menu.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://img.icons8.com/fluency/512/000000/restaurant-menu.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#090d16",
+  "theme_color": "#4f46ext",
+  "display": "standalone",
+  "orientation": "any"
+}

@@ -6,7 +6,8 @@ export const SHORTCUT_NAMES: Record<keyof ShortcutConfig, string> = {
   markMissing: 'Desaparecer ticket activo',
   focusInput: 'Enfocar entrada rápida',
   pauseResumeOcr: 'Pausar/Reanudar OCR',
-  activateSelected: 'Enviar a Ticket Activo'
+  activateSelected: 'Enviar a Ticket Activo',
+  pauseResumeWaitlist: 'Pausar/Reanudar Lista de Espera'
 };
 
 /**

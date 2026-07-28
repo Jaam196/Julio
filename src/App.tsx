@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Ticket, VoiceSettings, ShortcutConfig, AppConfig, MusicConfig } from './types';
+import { Ticket, VoiceSettings, ShortcutConfig, AppConfig, MusicConfig, AuthorizedDevice } from './types';
 import { musicController } from './utils/musicController';
 import {
   initDB,
@@ -16,7 +16,8 @@ import { speakText, playNotificationSound, triggerVibration, formatAnnouncementT
 import ManualInput from './components/ManualInput';
 import ActiveTicket from './components/ActiveTicket';
 import WaitingList from './components/WaitingList';
-import PendingList from './components/PendingList';
+import RecentHistoryList from './components/RecentHistoryList';
+import ReadyList from './components/ReadyList';
 import MissingList from './components/MissingList';
 import CameraOCR from './components/CameraOCR';
 import SettingsPanel from './components/SettingsPanel';
@@ -24,10 +25,14 @@ import HistoryPanel from './components/HistoryPanel';
 import StatisticsPanel from './components/StatisticsPanel';
 import BackgroundMusicPlayer from './components/BackgroundMusicPlayer';
 import DevicesPanel from './components/DevicesPanel';
+import PublicDisplayView from './components/PublicDisplayView';
+import ServerConsoleView from './components/ServerConsoleView';
 
-import { LayoutGrid, Camera, History, BarChart2, Settings as SettingsIcon, AlertCircle, Volume2, Keyboard, Play, Check, Trash2, ArrowRightLeft, Smartphone } from 'lucide-react';
+import { LayoutGrid, Camera, History, BarChart2, Settings as SettingsIcon, AlertCircle, Volume2, Keyboard, Play, Check, Trash2, ArrowRightLeft, Smartphone, Tablet, Monitor, Tv, Activity, Wifi, Music, Radio, Brain, Sparkles, Maximize, Minimize, X, Zap, Megaphone, Search, Pause, RotateCcw } from 'lucide-react';
 import { matchesShortcut, shouldProcessShortcut, SHORTCUT_NAMES } from './utils/shortcutHelper';
 import { AnimatePresence, motion } from 'motion/react';
+import { getThemeConfig, applyThemeVariables, findThemeById } from './utils/themeController';
+import { useDeviceLayout } from './utils/deviceLayoutController';
 
 const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   lang: 'es',
@@ -53,6 +58,7 @@ const DEFAULT_SHORTCUTS: ShortcutConfig = {
   focusInput: 'Escape',
   pauseResumeOcr: 'KeyP',
   activateSelected: 'KeyA',
+  pauseResumeWaitlist: 'KeyQ',
 };
 
 const DEFAULT_APP_CONFIG: AppConfig = {
@@ -62,31 +68,127 @@ const DEFAULT_APP_CONFIG: AppConfig = {
   waitingSelectedColor: '#4f46e5',
   pendingSelectedColor: '#f59e0b',
   demoteActivePosition: 'start',
+  ocrInputMode: 'direct_listos',
+  activeSwipeAction: 'pending',
+  missingRecoveryAction: 'active',
+  publicDisplayTitle: 'ORDER READY',
+  publicDisplayMessage: 'Please pick up your order',
+  publicDisplayThemePreset: 'black-yellow',
+  publicDisplayBg: '#000000',
+  publicDisplayTextColor: '#fbbf24',
+  publicDisplayTitleColor: '#ffffff',
+  publicDisplayShowMessage: true,
+  
+  // Enhanced defaults:
+  publicDisplayBgType: 'color',
+  publicDisplayBgImage: '',
+  publicDisplayBgVideo: '',
+  publicDisplayLogo: '',
+  publicDisplayFontFamily: 'space-grotesk',
+  publicDisplayNumberSize: 'massive',
+  publicDisplayAnimation: 'spring',
+  publicDisplayNoTicketsMessage: 'Next ticket in preparation...',
+  publicDisplayThemeMode: 'dark',
+  publicDisplayLanguage: 'en',
+  
+  publicDisplayStandbyEnabled: true,
+  publicDisplayStandbyImages: [],
+  publicDisplayBgVideos: [],
+  publicDisplayStandbyDuration: 5,
+  publicDisplayStandbyFit: 'cover',
+  publicDisplayHideBgOnActive: false,
+  publicDisplayDiagnosticEnabled: false,
+
+  publicDisplayMainColor: '#fbbf24',
+  publicDisplayListColor: '#ffffff',
+  publicDisplayNewColor: '#10b981',
+  publicDisplayOldColor: '#94a3b8',
+  publicDisplayMaxTickets: 20,
+  publicDisplayColumns: 4,
+  publicDisplayListNumberSize: 'medium',
+  publicDisplayListPosition: 'bottom',
+  publicDisplayShowMain: true,
+  publicDisplayLayoutMode: 'restaurant-2.0',
 };
 
 const DEFAULT_MUSIC_CONFIG: MusicConfig = {
-  enabled: false,
-  mode: 'none',
+  enabled: true,
+  mode: 'duck40',
   autoResume: true,
   infinitePlay: true,
   shuffle: false,
-  integratedEnabled: false,
+  integratedEnabled: true,
   integratedUrl: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
   integratedVolume: 80,
 };
 
 export default function App() {
+  // Device layout controller (Independent for PC, Tablet, and Mobile)
+  const { deviceType, layoutConfig, isMobile, isTablet, isPC } = useDeviceLayout();
+
   // Application states
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
   const [announcementCount, setAnnouncementCount] = useState<number>(0);
-  const [activeTab, setActiveTab] = useState<'board' | 'ocr' | 'history' | 'stats' | 'settings' | 'devices'>('board');
+  const [activeTab, setActiveTab] = useState<'board' | 'ocr' | 'history' | 'stats' | 'settings' | 'devices' | 'tv_view'>('board');
+  const [boardSubTab, setBoardSubTab] = useState<'all' | 'control' | 'waiting' | 'ready' | 'missing' | 'recent'>('all');
   const [isDBReady, setIsDBReady] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
+  const [customTTSInput, setCustomTTSInput] = useState('');
+  const [clockTime, setClockTime] = useState('');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Clock ticker effect
+  useEffect(() => {
+    const updateClock = () => {
+      setClockTime(new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    };
+    updateClock();
+    const timer = setInterval(updateClock, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fullscreen handler
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (err) {
+      console.error('Fullscreen toggle error:', err);
+    }
+  };
+
+  const [isAutonomousMode, setIsAutonomousMode] = useState<boolean>(() => {
+    return localStorage.getItem('isAutonomousMode') === 'true';
+  });
+  const [isAutoCallActive, setIsAutoCallActive] = useState<boolean>(() => {
+    return localStorage.getItem('isAutoCallActive') !== 'false'; // defaults to true
+  });
 
   // Client-Server and WebSocket states
   const [deviceMode, setDeviceMode] = useState<'local' | 'server' | 'client'>(() => {
     return (localStorage.getItem('deviceMode') as any) || 'local';
   });
+  const [clientRole, setClientRole] = useState<'controller' | 'pantalla'>(() => {
+    return (localStorage.getItem('clientRole') as any) || 'controller';
+  });
+  const [forcePCManualMode, setForcePCManualMode] = useState<boolean>(false);
+  const [serverLogs, setServerLogs] = useState<{ id: string; timestamp: string; message: string; type: 'info' | 'success' | 'warn' | 'error' }[]>([]);
+
+  const addServerLog = (message: string, type: 'info' | 'success' | 'warn' | 'error' = 'info') => {
+    const time = new Date().toLocaleTimeString();
+    setServerLogs(prev => [
+      { id: String(Date.now() + Math.random()), timestamp: time, message, type },
+      ...prev.slice(0, 99)
+    ]);
+  };
+
   const [pairingCode, setPairingCode] = useState<string>(() => {
     return localStorage.getItem('pairedCode') || '';
   });
@@ -97,14 +199,66 @@ export default function App() {
   const [serverIP, setServerIP] = useState<string>(() => {
     return localStorage.getItem('serverIP') || window.location.host;
   });
-  const [connectedClients, setConnectedClients] = useState<{ id: string; name: string; connected: boolean }[]>([]);
-  const [authorizedDevices, setAuthorizedDevices] = useState<{ id: string; name: string; approved: boolean }[]>(() => {
+  const [connectedClients, setConnectedClients] = useState<{ id: string; name: string; connected: boolean; type?: string }[]>([]);
+  const [authorizedDevices, setAuthorizedDevices] = useState<AuthorizedDevice[]>(() => {
     const saved = localStorage.getItem('authorizedDevices');
     return saved ? JSON.parse(saved) : [];
   });
+  const [pendingAuthRequests, setPendingAuthRequests] = useState<{ deviceId: string; deviceName: string; deviceType: string }[]>([]);
+  const [deauthorizedDeviceIds, setDeauthorizedDeviceIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('deauthorizedDeviceIds');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const [availableRooms, setAvailableRooms] = useState<{ code: string; serverName: string; clientsCount: number }[]>([]);
+  const [lastConnectionError, setLastConnectionError] = useState<string>('');
 
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<any>(null);
+  const lastMessageReceivedTimeRef = useRef<number>(Date.now());
+  const syncVersionRef = useRef<number>(1);
+
+  // Initial theme application and listener on boot
+  const [activeThemeId, setActiveThemeId] = useState<string>(() => {
+    const themeCfg = getThemeConfig();
+    return themeCfg.activeThemeId;
+  });
+
+  useEffect(() => {
+    const applyInitial = () => {
+      const themeCfg = getThemeConfig();
+      const activeT = findThemeById(themeCfg.activeThemeId, themeCfg.customThemes);
+      applyThemeVariables(activeT);
+      setActiveThemeId(themeCfg.activeThemeId);
+    };
+
+    applyInitial();
+
+    const handleThemeEvent = (e: Event) => {
+      const customEv = e as CustomEvent;
+      if (customEv.detail) {
+        applyThemeVariables(customEv.detail);
+        if (customEv.detail.id) setActiveThemeId(customEv.detail.id);
+      } else {
+        applyInitial();
+      }
+    };
+
+    window.addEventListener('app-theme-changed', handleThemeEvent);
+    return () => {
+      window.removeEventListener('app-theme-changed', handleThemeEvent);
+    };
+  }, []);
+
+  // Client diagnostic states
+  const [syncVersion, setSyncVersion] = useState<number>(1);
+  const [lastSyncTime, setLastSyncTime] = useState<string>('Nunca');
+  const [lastLatency, setLastLatency] = useState<number | null>(null);
+  const [lastReceivedEvent, setLastReceivedEvent] = useState<string>('Ninguno');
 
   // Get or Create Unique Client ID
   const getOrCreateDeviceId = () => {
@@ -119,6 +273,14 @@ export default function App() {
   // Controlled OCR pause state
   const [isOcrPaused, setIsOcrPaused] = useState(false);
 
+  // Controlled Waitlist pause state
+  const [isWaitlistPaused, setIsWaitlistPaused] = useState(false);
+
+  // Modo Servicio State (Hides non-essential UI during active service)
+  const [isServiceMode, setIsServiceMode] = useState<boolean>(() => {
+    return localStorage.getItem('isServiceMode') === 'true';
+  });
+
   // Keyboard navigation & highlight state for the waiting queue
   const [selectedWaitingTicketId, setSelectedWaitingTicketId] = useState<string | null>(null);
 
@@ -128,8 +290,11 @@ export default function App() {
   // Keyboard navigation & highlight state for the missing list
   const [selectedMissingTicketId, setSelectedMissingTicketId] = useState<string | null>(null);
 
+  // Keyboard navigation & highlight state for the ready list
+  const [selectedReadyTicketId, setSelectedReadyTicketId] = useState<string | null>(null);
+
   // Track the last focused list to route Arrow keys and Enter
-  const [lastFocusedList, setLastFocusedList] = useState<'waiting' | 'pending' | 'missing'>('waiting');
+  const [lastFocusedList, setLastFocusedList] = useState<'waiting' | 'pending' | 'missing' | 'ready'>('waiting');
 
   // Triggered when OCR detects a ticket that exists in Pending
   const [ocrPendingPrompt, setOcrPendingPrompt] = useState<{
@@ -158,6 +323,16 @@ export default function App() {
     id: number;
   } | null>(null);
 
+  // Config saved confirmation toast state
+  const [configSavedToast, setConfigSavedToast] = useState<string | null>(null);
+
+  const triggerConfigSavedToast = (message: string) => {
+    setConfigSavedToast(message);
+    const id = setTimeout(() => {
+      setConfigSavedToast(null);
+    }, 2000);
+  };
+
   // Configuration states
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(DEFAULT_VOICE_SETTINGS);
   const [shortcutConfig, setShortcutConfig] = useState<ShortcutConfig>(DEFAULT_SHORTCUTS);
@@ -166,6 +341,9 @@ export default function App() {
 
   // Refs for tracking announcement timers and background loops
   const announcementTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isSpeakingRef = useRef(false);
+  const speechQueueRef = useRef<Ticket[]>([]);
+  const announcedTicketIdsRef = useRef<Set<string>>(new Set());
   const voiceSettingsRef = useRef<VoiceSettings>(voiceSettings);
   const announcementCountRef = useRef<number>(announcementCount);
   const activeTicketRef = useRef<Ticket | null>(activeTicket);
@@ -177,17 +355,43 @@ export default function App() {
   const lastFocusedListRef = useRef<'waiting' | 'pending' | 'missing'>('waiting');
 
   const authorizedDevicesRef = useRef(authorizedDevices);
+  const deauthorizedDeviceIdsRef = useRef(deauthorizedDeviceIds);
   const deviceNameRef = useRef(deviceName);
   const handleRemoteActionRef = useRef<any>(null);
+  const appConfigRef = useRef<AppConfig>(appConfig);
+  const musicConfigRef = useRef<MusicConfig>(musicConfig);
+  const isWaitlistPausedRef = useRef<boolean>(isWaitlistPaused);
+
+  // Connection management and offline sync queue refs
+  const reconnectAttemptsRef = useRef<number>(0);
+  const heartbeatIntervalRef = useRef<any>(null);
+  const pendingActionsRef = useRef<{ action: string; payload: any }[]>([]);
 
   // Sync refs to avoid closures in setInterval and global listeners
   useEffect(() => {
     authorizedDevicesRef.current = authorizedDevices;
+    localStorage.setItem('authorizedDevices', JSON.stringify(authorizedDevices));
   }, [authorizedDevices]);
+
+  useEffect(() => {
+    deauthorizedDeviceIdsRef.current = deauthorizedDeviceIds;
+  }, [deauthorizedDeviceIds]);
 
   useEffect(() => {
     deviceNameRef.current = deviceName;
   }, [deviceName]);
+
+  useEffect(() => {
+    appConfigRef.current = appConfig;
+  }, [appConfig]);
+
+  useEffect(() => {
+    musicConfigRef.current = musicConfig;
+  }, [musicConfig]);
+
+  useEffect(() => {
+    isWaitlistPausedRef.current = isWaitlistPaused;
+  }, [isWaitlistPaused]);
 
   useEffect(() => {
     voiceSettingsRef.current = voiceSettings;
@@ -281,10 +485,121 @@ export default function App() {
     }, 50);
   };
 
+  const uploadAllMediaToServer = async (roomCode: string) => {
+    try {
+      const mediaKeys = ['bg_video', 'bg_image', 'logo'];
+      for (const key of mediaKeys) {
+        const stored = await dbGetSettings<string | Blob>('media_' + key);
+        if (stored) {
+          let blobToUpload: Blob | null = null;
+          let mimeType: string = '';
+
+          if (stored instanceof Blob) {
+            blobToUpload = stored;
+            mimeType = stored.type;
+          } else if (typeof stored === 'string') {
+            if (stored.startsWith('data:')) {
+              if (stored.length > 10 * 1024 * 1024) {
+                console.warn(`[Media Sync] skipping '${key}' because base64 data URI is too large. Please re-upload.`);
+                continue;
+              }
+              try {
+                const parts = stored.split(',');
+                const byteString = atob(parts[1]);
+                mimeType = parts[0].split(':')[1].split(';')[0];
+                const ab = new ArrayBuffer(byteString.length);
+                const ia = new Uint8Array(ab);
+                for (let i = 0; i < byteString.length; i++) {
+                  ia[i] = byteString.charCodeAt(i);
+                }
+                blobToUpload = new Blob([ab], { type: mimeType });
+              } catch (e) {
+                console.error('Error converting stored data URI to Blob for upload:', e);
+              }
+            }
+          }
+
+          if (blobToUpload) {
+            console.log(`[Media Sync] Uploading media '${key}' as raw binary (${mimeType}) to HTTP server for room '${roomCode}'...`);
+            const response = await fetch(`/api/media/${roomCode}/${key}`, {
+              method: 'POST',
+              headers: { 
+                'Content-Type': mimeType || 'application/octet-stream'
+              },
+              body: blobToUpload,
+            });
+            if (response.ok) {
+              console.log(`[Media Sync] '${key}' uploaded successfully!`);
+            } else {
+              console.warn(`[Media Sync] Failed to upload media '${key}':`, response.statusText);
+            }
+          }
+        }
+      }
+
+      // Also upload standby images if they exist
+      const savedAppConfig = await dbGetSettings<AppConfig>('app_config');
+      if (savedAppConfig && savedAppConfig.publicDisplayStandbyImages && Array.isArray(savedAppConfig.publicDisplayStandbyImages)) {
+        for (const img of savedAppConfig.publicDisplayStandbyImages) {
+          const key = `standby_image_${img.id}`;
+          const stored = await dbGetSettings<string | Blob>('media_' + key);
+          if (stored) {
+            let blobToUpload: Blob | null = null;
+            let mimeType: string = '';
+
+            if (stored instanceof Blob) {
+              blobToUpload = stored;
+              mimeType = stored.type;
+            } else if (typeof stored === 'string') {
+              if (stored.startsWith('data:')) {
+                if (stored.length > 10 * 1024 * 1024) {
+                  console.warn(`[Media Sync] skipping standby image because base64 data URI is too large.`);
+                  continue;
+                }
+                try {
+                  const parts = stored.split(',');
+                  const byteString = atob(parts[1]);
+                  mimeType = parts[0].split(':')[1].split(';')[0];
+                  const ab = new ArrayBuffer(byteString.length);
+                  const ia = new Uint8Array(ab);
+                  for (let i = 0; i < byteString.length; i++) {
+                    ia[i] = byteString.charCodeAt(i);
+                  }
+                  blobToUpload = new Blob([ab], { type: mimeType });
+                } catch (e) {
+                  console.error('Error converting stored standby image to Blob for upload:', e);
+                }
+              }
+            }
+
+            if (blobToUpload) {
+              console.log(`[Media Sync] Uploading standby image '${img.id}' as raw binary (${mimeType}) to HTTP server...`);
+              await fetch(`/api/media/${roomCode}/${key}`, {
+                method: 'POST',
+                headers: { 
+                  'Content-Type': mimeType || 'application/octet-stream'
+                },
+                body: blobToUpload,
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Media Sync] Error in uploadAllMediaToServer:', err);
+    }
+  };
+
   // Client-Server actions and WebSocket management
-  const connectWebSocket = (mode: 'server' | 'client', code: string, ip: string) => {
+  const connectWebSocket = (mode: 'server' | 'client', code: string, ip: string, isManual = false) => {
     if (socketRef.current) {
+      const isSameHost = socketRef.current.url.includes(ip);
+      if (!isManual && isSameHost && (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING)) {
+        console.log('WebSocket is already active or connecting. Skipping redundant connect attempt.');
+        return;
+      }
       try {
+        console.log('Closing existing WebSocket to force clean connection/pairing...');
         socketRef.current.close();
       } catch (e) {}
       socketRef.current = null;
@@ -294,6 +609,9 @@ export default function App() {
     }
 
     setPairingStatus('searching');
+    if (mode === 'client') {
+      setPairingCode(code);
+    }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socketHost = mode === 'server' ? window.location.host : ip;
@@ -305,27 +623,78 @@ export default function App() {
 
     ws.onopen = () => {
       console.log('WebSocket connected');
+      lastMessageReceivedTimeRef.current = Date.now();
+      reconnectAttemptsRef.current = 0; // Reset connection attempts on successful connection
+
+      // Setup keep-alive heartbeat interval to prevent idle disconnections (especially on TVs)
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+      }
+      heartbeatIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          } catch (e) {}
+        }
+      }, 15000);
+
       if (mode === 'server') {
-        ws.send(JSON.stringify({ type: 'register_server' }));
+        const savedCode = localStorage.getItem('pairedCode') || '';
+        ws.send(JSON.stringify({ type: 'register_server', code: savedCode, serverName: 'PC Servidor Principal' }));
       } else {
         ws.send(JSON.stringify({
           type: 'register_client',
           code,
           deviceId: getOrCreateDeviceId(),
           deviceName: deviceNameRef.current,
+          deviceType: clientRole === 'pantalla' ? 'Pantalla Pública' : 'Cliente de Control',
+          isManual,
         }));
+
+        // Flush offline action queue if returning online
+        if (pendingActionsRef.current.length > 0) {
+          console.log(`[Offline Sync Queue] Connection restored! Flushing ${pendingActionsRef.current.length} queued action(s)...`);
+          pendingActionsRef.current.forEach((item) => {
+            try {
+              ws.send(JSON.stringify({
+                type: 'client_action',
+                action: item.action,
+                payload: item.payload,
+                deviceName: deviceNameRef.current,
+              }));
+            } catch (e) {
+              console.error('[Offline Sync Queue] Failed to flush action:', item.action, e);
+            }
+          });
+          pendingActionsRef.current = [];
+          triggerConfigSavedToast('¡Conexión recuperada! Cambios sincronizados.');
+        }
       }
     };
 
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
       try {
+        lastMessageReceivedTimeRef.current = Date.now();
         const data = JSON.parse(event.data);
         console.log('WebSocket message received:', data);
+
+        if (mode === 'client') {
+          setLastReceivedEvent(data.type || 'unknown');
+          setLastSyncTime(new Date().toLocaleTimeString());
+        }
+
+        if (data.type === 'pong') {
+          return;
+        }
 
         if (data.type === 'server_registered') {
           setPairingCode(data.code);
           localStorage.setItem('pairedCode', data.code);
           setPairingStatus('paired');
+          if (mode === 'server') {
+            addServerLog(`Servidor registrado con éxito. Código de sala local: ${data.code}`, 'success');
+            uploadAllMediaToServer(data.code);
+          }
         }
 
         else if (data.type === 'pairing_success') {
@@ -334,48 +703,131 @@ export default function App() {
           setPairingStatus('paired');
           setServerIP(ip);
           localStorage.setItem('serverIP', ip);
+          setLastConnectionError('');
+          if (clientRole === 'controller') {
+            setActiveTab('board');
+          }
         }
 
         else if (data.type === 'pairing_failed') {
           setPairingStatus('failed');
-          alert(`Error de emparejamiento: ${data.reason}`);
+          setLastConnectionError(data.reason || 'Código incorrecto o vencido');
+          triggerConfigSavedToast(`Error de emparejamiento: ${data.reason}`);
+          if (mode === 'server') {
+            addServerLog(`Error de vinculación: ${data.reason}`, 'error');
+          } else {
+            try {
+              ws.close();
+            } catch (e) {}
+          }
+        }
+
+        else if (data.type === 'client_connection_request') {
+          const existingDevice = authorizedDevicesRef.current.find(d => d.id === data.deviceId);
+          if (existingDevice) {
+            if (existingDevice.status === 'blocked') {
+              ws.send(JSON.stringify({
+                type: 'auth_decision',
+                deviceId: data.deviceId,
+                approved: false,
+                deviceName: data.deviceName,
+                deviceType: data.deviceType,
+              }));
+              if (mode === 'server') {
+                addServerLog(`Intento de conexión rechazado automáticamente para dispositivo BLOQUEADO: "${data.deviceName}"`, 'warn');
+              }
+            } else {
+              ws.send(JSON.stringify({
+                type: 'auth_decision',
+                deviceId: data.deviceId,
+                approved: true,
+                remember: existingDevice.remember,
+                deviceName: data.deviceName,
+                deviceType: data.deviceType,
+              }));
+              setAuthorizedDevices(prev => prev.map(d => d.id === data.deviceId ? {
+                ...d,
+                lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+              } : d));
+            }
+          } else {
+            setPendingAuthRequests(prev => {
+              if (prev.some(r => r.deviceId === data.deviceId)) return prev;
+              return [...prev, { deviceId: data.deviceId, deviceName: data.deviceName, deviceType: data.deviceType }];
+            });
+            if (mode === 'server') {
+              addServerLog(`Nueva solicitud de conexión de: "${data.deviceName}" (${data.deviceType})`, 'info');
+            }
+          }
         }
 
         else if (data.type === 'client_joined') {
-          // PC Server checks if this client is deauthorized
-          const wasDeauthorized = authorizedDevicesRef.current.length > 0 && !authorizedDevicesRef.current.some(d => d.id === data.deviceId);
-          if (wasDeauthorized) {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: 'deauthorize_client',
-                deviceId: data.deviceId
-              }));
-            }
-            return;
-          }
-
-          // Approve and save/update client device on PC Server
           setAuthorizedDevices(prev => {
             const exists = prev.some(d => d.id === data.deviceId);
+            const newDevice = {
+              id: data.deviceId,
+              name: data.deviceName,
+              type: data.deviceType || 'Tablet',
+              status: 'authorized' as const,
+              remember: data.remember || false,
+              lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+            };
             if (exists) {
-              return prev.map(d => d.id === data.deviceId ? { ...d, name: data.deviceName } : d);
+              return prev.map(d => d.id === data.deviceId ? newDevice : d);
             }
-            return [...prev, { id: data.deviceId, name: data.deviceName, approved: true }];
+            return [...prev, newDevice];
           });
 
           setConnectedClients(prev => {
             const exists = prev.some(c => c.id === data.deviceId);
             if (exists) {
-              return prev.map(c => c.id === data.deviceId ? { ...c, name: data.deviceName, connected: true } : c);
+              return prev.map(c => c.id === data.deviceId ? { ...c, name: data.deviceName, connected: true, type: data.deviceType } : c);
             }
-            return [...prev, { id: data.deviceId, name: data.deviceName, connected: true }];
+            return [...prev, { id: data.deviceId, name: data.deviceName, connected: true, type: data.deviceType }];
           });
+
+          if (mode === 'server') {
+            addServerLog(`Dispositivo "${data.deviceName}" (${data.deviceType || 'Tablet'}) se ha conectado al Servidor.`, 'success');
+            
+            // Immediately push current server state to this specific reconnected client
+            const statePayload = {
+              type: 'sync_state',
+              tickets: ticketsRef.current,
+              activeTicket: activeTicketRef.current,
+              announcementCount: announcementCountRef.current,
+              appConfig: appConfigRef.current,
+              voiceSettings: voiceSettingsRef.current,
+              musicConfig: musicConfigRef.current,
+              isWaitlistPaused: isWaitlistPausedRef.current,
+            };
+            
+            ws.send(JSON.stringify({
+              type: 'send_to_client',
+              deviceId: data.deviceId,
+              payload: statePayload
+            }));
+            console.log(`[Sync] Sent immediate full-state synchronization to newly reconnected client: "${data.deviceName}" (${data.deviceId})`);
+          }
         }
 
         else if (data.type === 'client_left') {
           setConnectedClients(prev => {
+            const clientObj = prev.find(c => c.id === data.deviceId);
+            if (clientObj && mode === 'server') {
+              addServerLog(`Dispositivo "${clientObj.name}" se ha desconectado de la red local.`, 'warn');
+            }
             return prev.map(c => c.id === data.deviceId ? { ...c, connected: false } : c);
           });
+        }
+
+        else if (data.type === 'media_response') {
+          await dbSaveSettings('media_' + data.mediaKey, data.data);
+          window.dispatchEvent(new CustomEvent('media-updated', { detail: { key: data.mediaKey } }));
+        }
+
+        else if (data.type === 'media_updated') {
+          console.log(`[Media Sync] Real-time video update event received for key: ${data.key}`);
+          window.dispatchEvent(new CustomEvent('media-updated', { detail: { key: data.key } }));
         }
 
         else if (data.type === 'sync_state') {
@@ -386,7 +838,34 @@ export default function App() {
             setAppConfig(data.appConfig);
             setVoiceSettings(data.voiceSettings);
             setMusicConfig(data.musicConfig);
+            setIsWaitlistPaused(data.isWaitlistPaused ?? false);
             setPairingStatus('paired');
+
+            setSyncVersion(data.syncVersion ?? 0);
+            if (data.timestamp) {
+              setLastLatency(Math.max(0, Date.now() - data.timestamp));
+            }
+
+            // Persist locally for TV recovery!
+            try {
+              if (data.tickets) {
+                // Clear and save to indexedDB
+                dbClearTickets('all').then(() => {
+                  dbSaveTicketsBulk(data.tickets);
+                }).catch(err => console.error('[Client Persist] Clear tickets error:', err));
+              }
+              if (data.appConfig) {
+                dbSaveSettings('app_config', data.appConfig);
+              }
+              if (data.voiceSettings) {
+                dbSaveSettings('voice_settings', data.voiceSettings);
+              }
+              if (data.musicConfig) {
+                dbSaveSettings('music_settings', data.musicConfig);
+              }
+            } catch (err) {
+              console.error('Failed to persist synced state locally:', err);
+            }
           }
         }
 
@@ -395,7 +874,7 @@ export default function App() {
           setDeviceMode('local');
           localStorage.setItem('deviceMode', 'local');
           setPairingStatus('unpaired');
-          alert('Tu tablet ha sido desvinculada por el PC Servidor.');
+          triggerConfigSavedToast('Tu tablet ha sido desvinculada por el PC Servidor.');
         }
 
         else if (data.type === 'rename') {
@@ -406,17 +885,32 @@ export default function App() {
         else if (data.type === 'server_disconnected') {
           setPairingStatus('failed');
           if (mode === 'client') {
-            console.log('Server disconnected. Reconnecting in 3 seconds...');
+            console.log('Server disconnected. Reconnecting in 1 second...');
             reconnectTimeoutRef.current = setTimeout(() => {
               connectWebSocket('client', code, ip);
-            }, 3000);
+            }, 1000);
           }
         }
 
         else if (data.type === 'client_action') {
           if (mode === 'server') {
+            if (mode === 'server') {
+              const clientName = data.deviceName || 'Tablet Remota';
+              let actionName = data.action;
+              if (data.action === 'add_ticket') actionName = `Crear Ticket #${data.payload?.number}`;
+              else if (data.action === 'call_next') actionName = `Llamar siguiente ticket`;
+              else if (data.action === 'mark_delivered') actionName = `Entregar ticket actual`;
+              else if (data.action === 'mark_pending') actionName = `Pausar ticket actual`;
+              else if (data.action === 'mark_missing') actionName = `Marcar ticket como desaparecido`;
+              else if (data.action === 'repeat_call') actionName = `Repetir llamada vocal`;
+              else if (data.action === 'activate_from_pause') actionName = `Reactivar ticket desde pausa`;
+              else if (data.action === 'activate_from_missing') actionName = `Recuperar ticket de perdidos`;
+              else if (data.action === 'delete_ticket') actionName = `Eliminar ticket`;
+              else if (data.action === 'toggle_waitlist_pause') actionName = `Alternar pausa de lista de espera`;
+              addServerLog(`Comando [${actionName}] recibido de "${clientName}" y ejecutado.`, 'info');
+            }
             if (handleRemoteActionRef.current) {
-              handleRemoteActionRef.current(data.action, data.payload);
+              handleRemoteActionRef.current(data.action, data.payload, data.deviceId);
             }
           }
         }
@@ -425,13 +919,30 @@ export default function App() {
       }
     };
 
-    ws.onclose = () => {
-      console.log('WebSocket closed');
-      if (pairingStatus === 'paired') {
-        setPairingStatus('failed');
+    ws.onclose = (event) => {
+      console.log('WebSocket closed with code:', event.code);
+      setPairingStatus('failed');
+
+      // Clear heartbeat interval to prevent timer leaks
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
+
+      if (!event.wasClean) {
+        setLastConnectionError(`Conexión perdida o interrumpida de forma inesperada (Código: ${event.code})`);
+      } else {
+        setLastConnectionError('Conexión cerrada.');
       }
       
-      // Auto reconnect
+      // Auto reconnect with progressive backoff (1s, 2s, 5s, 10s, 15s)
+      reconnectAttemptsRef.current += 1;
+      const delays = [1000, 2000, 5000, 10000, 15000];
+      const delayIndex = Math.min(reconnectAttemptsRef.current - 1, delays.length - 1);
+      const nextDelay = delays[delayIndex];
+
+      console.log(`[WS Reconnect] Lost connection. Reconnecting in ${nextDelay / 1000}s (Attempt ${reconnectAttemptsRef.current})...`);
+
       reconnectTimeoutRef.current = setTimeout(() => {
         const m = localStorage.getItem('deviceMode');
         if (m && m !== 'local') {
@@ -439,38 +950,92 @@ export default function App() {
           const i = localStorage.getItem('serverIP') || window.location.host;
           connectWebSocket(m as 'server' | 'client', c, i);
         }
-      }, 4000);
+      }, nextDelay);
     };
 
     ws.onerror = (err) => {
       console.warn('WebSocket connection error (this is normal during setup or local scanning):', err);
+      setLastConnectionError('No se pudo establecer conexión. Verifique la IP o el código de sala.');
+      setPairingStatus('failed');
     };
   };
 
   const sendClientAction = (action: string, payload: any = {}) => {
-    if (deviceMode === 'client' && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        type: 'client_action',
-        action,
-        payload,
-        deviceName,
-      }));
-      return true; // Action routed remotely, skip local state updates
+    if (deviceMode === 'client') {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'client_action',
+          action,
+          payload,
+          deviceName,
+        }));
+        return true; // Action routed remotely, skip local state updates
+      } else {
+        // Queue the action while offline to prevent data loss!
+        pendingActionsRef.current.push({ action, payload });
+        console.log(`[Offline Sync Queue] Queued action '${action}' while disconnected.`, payload);
+        triggerConfigSavedToast('Dispositivo sin conexión. Los cambios se enviarán al reconectar.');
+        return true; // Prevent local state update on read-only client until server responds
+      }
     }
     return false; // Run locally
   };
 
-  const handleRemoteAction = (action: string, payload: any) => {
+  const handleSendMediaToClient = async (mediaKey: string, deviceId: string) => {
+    try {
+      const stored = await dbGetSettings<string | Blob>('media_' + mediaKey);
+      if (stored) {
+        let sendData: string = '';
+        if (stored instanceof Blob) {
+          sendData = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(stored);
+          });
+        } else if (typeof stored === 'string') {
+          sendData = stored;
+        } else {
+          console.warn('Unknown media type in DB:', typeof stored);
+          return;
+        }
+
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: 'send_to_client',
+            deviceId,
+            payload: {
+              type: 'media_response',
+              mediaKey,
+              data: sendData
+            }
+          }));
+        }
+      }
+    } catch (e) {
+      console.error('Error sending media to client:', e);
+    }
+  };
+
+  const handleRemoteAction = (action: string, payload: any, deviceId?: string) => {
     console.log(`Executing remote client action: ${action}`, payload);
     switch (action) {
+      case 'request_media':
+        if (deviceId) {
+          handleSendMediaToClient(payload.mediaKey, deviceId);
+        }
+        break;
       case 'add_ticket':
-        handleAddTicket(payload.number);
+        handleAddTicket(payload.number, payload.fromOcr);
         break;
       case 'mark_delivered':
         handleMarkDelivered(payload.id);
         break;
       case 'mark_pending':
         handleMarkPending(payload.id);
+        break;
+      case 'move_to_pending':
+        handleMoveToPending(payload.id);
         break;
       case 'mark_missing':
         handleMarkMissing(payload.id);
@@ -490,6 +1055,9 @@ export default function App() {
       case 'raise_priority':
         handleRaisePriority(payload.id);
         break;
+      case 'toggle_priority':
+        handleTogglePriority(payload.id);
+        break;
       case 'call_next':
         handleCallNext();
         break;
@@ -508,8 +1076,26 @@ export default function App() {
       case 'return_to_waiting':
         handleReturnToWaiting(payload.id);
         break;
+      case 'restore_ticket':
+        handleRestoreTicket(payload.id);
+        break;
       case 'deliver_from_pause':
         handleDeliverFromPause(payload.id);
+        break;
+      case 'toggle_waitlist_pause':
+        handleToggleWaitlistPause();
+        break;
+      case 'save_voice_settings':
+        handleSaveVoiceSettings(payload.settings);
+        break;
+      case 'save_shortcut_config':
+        handleSaveShortcutConfig(payload.shortcuts);
+        break;
+      case 'save_app_config':
+        handleSaveAppConfig(payload.config);
+        break;
+      case 'save_music_config':
+        handleSaveMusicConfig(payload.config);
         break;
       default:
         console.warn(`Unknown remote action: ${action}`);
@@ -518,7 +1104,7 @@ export default function App() {
 
   handleRemoteActionRef.current = handleRemoteAction;
 
-  const handleSelectMode = (mode: 'local' | 'server' | 'client') => {
+  const handleSelectMode = (mode: 'local' | 'server' | 'mobile_control' | 'public_display') => {
     if (socketRef.current) {
       try {
         socketRef.current.close();
@@ -529,10 +1115,9 @@ export default function App() {
       clearTimeout(reconnectTimeoutRef.current);
     }
 
-    setDeviceMode(mode);
-    localStorage.setItem('deviceMode', mode);
-
     if (mode === 'local') {
+      setDeviceMode('local');
+      localStorage.setItem('deviceMode', 'local');
       setPairingStatus('unpaired');
       setPairingCode('');
       setConnectedClients([]);
@@ -544,16 +1129,50 @@ export default function App() {
         setIsDBReady(true);
       });
     } else if (mode === 'server') {
-      connectWebSocket('server', '', window.location.host);
-    } else if (mode === 'client') {
-      setPairingStatus('unpaired');
+      setDeviceMode('server');
+      localStorage.setItem('deviceMode', 'server');
+      const savedCode = localStorage.getItem('pairedCode') || '';
+      connectWebSocket('server', savedCode, window.location.host);
+    } else if (mode === 'mobile_control') {
+      setDeviceMode('client');
+      localStorage.setItem('deviceMode', 'client');
+      setClientRole('controller');
+      localStorage.setItem('clientRole', 'controller');
       setTickets([]);
       setActiveTicket(null);
+      setActiveTab('devices');
+      const savedCode = localStorage.getItem('pairedCode') || pairingCode || '';
+      const savedIP = localStorage.getItem('serverIP') || serverIP || window.location.host;
+      if (savedCode) {
+        connectWebSocket('client', savedCode, savedIP);
+      } else {
+        setPairingStatus('unpaired');
+      }
+    } else if (mode === 'public_display') {
+      setDeviceMode('client');
+      localStorage.setItem('deviceMode', 'client');
+      setClientRole('pantalla');
+      localStorage.setItem('clientRole', 'pantalla');
+      setTickets([]);
+      setActiveTicket(null);
+      setActiveTab('devices');
+      const savedCode = localStorage.getItem('pairedCode') || pairingCode || '';
+      const savedIP = localStorage.getItem('serverIP') || serverIP || window.location.host;
+      if (savedCode) {
+        connectWebSocket('client', savedCode, savedIP);
+      } else {
+        setPairingStatus('unpaired');
+      }
     }
   };
 
-  const handleStartPairing = (code: string) => {
-    connectWebSocket('client', code, serverIP);
+  const handleStartPairing = (code: string, ip?: string) => {
+    const targetIP = ip || serverIP || window.location.host;
+    if (ip && ip !== serverIP) {
+      setServerIP(ip);
+      localStorage.setItem('serverIP', ip);
+    }
+    connectWebSocket('client', code, targetIP, true);
   };
 
   const handleSetDeviceName = (name: string) => {
@@ -582,9 +1201,32 @@ export default function App() {
     }
   };
 
+  const handleBlockDevice = (id: string) => {
+    setAuthorizedDevices(prev => {
+      return prev.map(d => d.id === id ? { ...d, status: 'blocked' as const } : d);
+    });
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'deauthorize_client',
+        deviceId: id,
+      }));
+    }
+  };
+
+  const handleUnblockDevice = (id: string) => {
+    setAuthorizedDevices(prev => {
+      return prev.map(d => d.id === id ? { ...d, status: 'authorized' as const } : d);
+    });
+  };
+
   const handleRemoveClient = (id: string) => {
     setConnectedClients(prev => prev.filter(c => c.id !== id));
     setAuthorizedDevices(prev => prev.filter(d => d.id !== id));
+    setDeauthorizedDeviceIds(prev => {
+      const next = prev.includes(id) ? prev : [...prev, id];
+      localStorage.setItem('deauthorizedDeviceIds', JSON.stringify(next));
+      return next;
+    });
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({
         type: 'deauthorize_client',
@@ -597,6 +1239,18 @@ export default function App() {
     handleSelectMode('local');
   };
 
+  const handleSetClientRole = (role: 'controller' | 'pantalla') => {
+    setClientRole(role);
+    localStorage.setItem('clientRole', role);
+    if (deviceMode === 'client') {
+      const savedCode = localStorage.getItem('pairedCode') || pairingCode || '';
+      const ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
+      if (savedCode) {
+        connectWebSocket('client', savedCode, ip);
+      }
+    }
+  };
+
   // Sync authorizedDevices to localStorage
   useEffect(() => {
     localStorage.setItem('authorizedDevices', JSON.stringify(authorizedDevices));
@@ -607,6 +1261,8 @@ export default function App() {
           id: d.id,
           name: d.name,
           connected: existing ? existing.connected : false,
+          type: d.type || 'Tablet',
+          status: d.status || 'authorized',
         };
       });
     });
@@ -615,7 +1271,9 @@ export default function App() {
   // Establish initial connections on start
   useEffect(() => {
     if (deviceMode === 'server') {
-      connectWebSocket('server', '', window.location.host);
+      const savedCode = localStorage.getItem('pairedCode') || '';
+      connectWebSocket('server', savedCode, window.location.host);
+      addServerLog("Servidor local iniciado. Esperando conexiones de tablets o pantallas...", "info");
     } else if (deviceMode === 'client' && pairingCode) {
       connectWebSocket('client', pairingCode, serverIP);
     }
@@ -631,10 +1289,107 @@ export default function App() {
     };
   }, []);
 
+  // Global Background Auto-Discovery Loop for Client Devices
+  useEffect(() => {
+    if (deviceMode !== 'client' || pairingStatus === 'paired') return;
+
+    const fetchRooms = async () => {
+      try {
+        const res = await fetch('/api/rooms');
+        if (res.ok) {
+          const data = await res.json();
+          const roomsList = data.rooms || [];
+          setAvailableRooms(roomsList);
+
+          // Auto-connect if exactly one room is available and we are currently unpaired or if a different room code is discovered
+          if (roomsList.length === 1) {
+            const discoveredRoom = roomsList[0];
+            const isDifferentCode = discoveredRoom.code !== pairingCode;
+            const canAutoConnect = pairingStatus === 'unpaired' || (pairingStatus === 'failed' && isDifferentCode);
+            
+            if (canAutoConnect) {
+              console.log(`Global Auto-discovery: Connecting to room ${discoveredRoom.code}`);
+              handleStartPairing(discoveredRoom.code);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Error fetching available rooms in global background thread:', err);
+      }
+    };
+
+    fetchRooms();
+    const interval = setInterval(fetchRooms, 2500);
+    return () => clearInterval(interval);
+  }, [deviceMode, pairingStatus, pairingCode]);
+
+  // Bulletproof auto-reconnect on visibility/focus/online events and background heartbeat
+  useEffect(() => {
+    const handleCheckAndReconnect = () => {
+      const mode = localStorage.getItem('deviceMode');
+      if (mode && mode !== 'local') {
+        const socket = socketRef.current;
+        if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+          console.log('Device woke up, became visible, or regained focus. Reconnecting socket immediately...');
+          const code = localStorage.getItem('pairedCode') || '';
+          const ip = localStorage.getItem('serverIP') || window.location.host;
+          connectWebSocket(mode as 'server' | 'client', code, ip);
+          if (mode === 'server') {
+            addServerLog("Se detectó actividad/enfoque de pantalla. Verificando red local...", "info");
+          }
+        }
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleCheckAndReconnect();
+      }
+    };
+
+    window.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', handleCheckAndReconnect);
+    window.addEventListener('online', handleCheckAndReconnect);
+
+    // Continuous 1.5-second background monitoring check
+    const interval = setInterval(() => {
+      const mode = localStorage.getItem('deviceMode');
+      if (mode && mode !== 'local') {
+        const socket = socketRef.current;
+        
+        // If connected, check for dead silent connections (half-open sockets)
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          const idleTime = Date.now() - lastMessageReceivedTimeRef.current;
+          if (idleTime > 25000) {
+            console.warn('Heartbeat: No message received in 25s. Socket is dead. Force closing...');
+            try {
+              socket.close();
+            } catch (e) {}
+          }
+        }
+
+        if (!socket || socket.readyState === WebSocket.CLOSED) {
+          console.log('Heartbeat: Socket is closed or null. Triggering automatic reconnect...');
+          const code = localStorage.getItem('pairedCode') || '';
+          const ip = localStorage.getItem('serverIP') || window.location.host;
+          connectWebSocket(mode as 'server' | 'client', code, ip);
+        }
+      }
+    }, 1500);
+
+    return () => {
+      window.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', handleCheckAndReconnect);
+      window.removeEventListener('online', handleCheckAndReconnect);
+      clearInterval(interval);
+    };
+  }, []);
+
   // Server state broadcast effect: broadcast server state updates to clients
   useEffect(() => {
     if (deviceMode !== 'server' || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
     
+    syncVersionRef.current += 1;
     const statePayload = {
       type: 'state_broadcast',
       tickets,
@@ -643,17 +1398,16 @@ export default function App() {
       appConfig,
       voiceSettings,
       musicConfig,
+      isWaitlistPaused,
+      syncVersion: syncVersionRef.current,
+      timestamp: Date.now(),
     };
     socketRef.current.send(JSON.stringify(statePayload));
-  }, [tickets, activeTicket, announcementCount, appConfig, voiceSettings, musicConfig, deviceMode]);
+  }, [tickets, activeTicket, announcementCount, appConfig, voiceSettings, musicConfig, deviceMode, isWaitlistPaused]);
 
   // 1. Initial boot and IndexedDB fetch
   useEffect(() => {
     async function loadAppState() {
-      if (deviceMode === 'client') {
-        setIsDBReady(true);
-        return;
-      }
       try {
         await initDB();
         
@@ -665,15 +1419,27 @@ export default function App() {
         if (savedShortcuts) setShortcutConfig(savedShortcuts);
 
         const savedAppConfig = await dbGetSettings<AppConfig>('app_config');
-        if (savedAppConfig) setAppConfig(savedAppConfig);
+        if (savedAppConfig) {
+          const migrated = await processAndSaveMedia(savedAppConfig);
+          if (JSON.stringify(migrated) !== JSON.stringify(savedAppConfig)) {
+            await dbSaveSettings('app_config', migrated);
+          }
+          setAppConfig(migrated);
+        }
 
         const savedMusic = await dbGetSettings<MusicConfig>('music_settings');
-        if (savedMusic) {
-          setMusicConfig(savedMusic);
-          musicController.setConfig(savedMusic);
-        } else {
-          musicController.setConfig(DEFAULT_MUSIC_CONFIG);
-        }
+        const activeMusicConfig: MusicConfig = savedMusic
+          ? {
+              ...savedMusic,
+              enabled: savedMusic.enabled !== undefined ? savedMusic.enabled : true,
+              integratedEnabled: savedMusic.integratedEnabled !== undefined ? savedMusic.integratedEnabled : true,
+              mode: (savedMusic.mode as any) === 'integrated' ? 'duck40' : (savedMusic.mode || 'duck40'),
+            }
+          : DEFAULT_MUSIC_CONFIG;
+
+        setMusicConfig(activeMusicConfig);
+        musicController.setConfig(activeMusicConfig);
+        musicController.triggerAutoplay();
 
         // Fetch all tickets
         const allTickets = await dbGetTickets();
@@ -702,22 +1468,20 @@ export default function App() {
     loadAppState();
   }, []);
 
-  // 2. TTS Announcement Loop Controller
-  useEffect(() => {
-    // Clear any active timer first
-    if (announcementTimerRef.current) {
-      clearInterval(announcementTimerRef.current);
-      announcementTimerRef.current = null;
+  // Process the speech announcement queue sequentially
+  const processSpeechQueue = async () => {
+    if (isSpeakingRef.current || speechQueueRef.current.length === 0 || deviceMode === 'client') return;
+
+    isSpeakingRef.current = true;
+    const nextTicket = speechQueueRef.current.shift();
+    if (!nextTicket) {
+      isSpeakingRef.current = false;
+      return;
     }
 
-    if (!activeTicket || deviceMode === 'client') return;
-
-    // Local function to execute single speech call
-    const runSpeechCall = async (count: number) => {
+    try {
       const settings = voiceSettingsRef.current;
-      const ticket = activeTicketRef.current;
-      if (!ticket) return;
-
+      
       // Notify music controller that an announcement is starting
       musicController.startAnnouncement();
 
@@ -732,29 +1496,61 @@ export default function App() {
       }
 
       // 3. TTS Vocalization
-      const msgText = formatAnnouncementText(ticket.number, settings, count);
-      speakText(msgText, settings, undefined, () => {
-        // Notify music controller that speech is finished
-        musicController.endAnnouncement();
+      const msgText = formatAnnouncementText(nextTicket.number, settings, 1);
+      
+      await new Promise<void>((resolve) => {
+        speakText(msgText, settings, undefined, () => {
+          resolve();
+        });
       });
-    };
 
-    // First instant announcement
-    runSpeechCall(announcementCount);
+    } catch (err) {
+      console.warn("Error playing announcement for ticket:", nextTicket.number, err);
+    } finally {
+      // Notify music controller that speech is finished
+      musicController.endAnnouncement();
+      isSpeakingRef.current = false;
+      
+      // Process next item in the queue with a tiny gap
+      setTimeout(() => {
+        processSpeechQueue();
+      }, 400);
+    }
+  };
 
-    // Setup periodic repetition loop
-    announcementTimerRef.current = setInterval(() => {
-      const nextCount = announcementCountRef.current + 1;
-      setAnnouncementCount(nextCount);
-      runSpeechCall(nextCount);
-    }, voiceSettings.announcementInterval * 1000);
+  // 2. Sequential non-overlapping Voice Queue controller
+  useEffect(() => {
+    if (!isDBReady || deviceMode === 'client') return;
+    
+    const activeList = tickets.filter(t => t.status === 'active');
+    
+    // Warm up announced set on mount so we don't repeat-announce historical tickets
+    if (announcedTicketIdsRef.current.size === 0 && activeList.length > 0) {
+      activeList.forEach(t => announcedTicketIdsRef.current.add(t.id));
+      return;
+    }
 
-    return () => {
-      if (announcementTimerRef.current) {
-        clearInterval(announcementTimerRef.current);
+    // Clean up IDs that are no longer active, so they can be announced again if reactivated
+    const currentActiveIds = new Set(activeList.map(t => t.id));
+    announcedTicketIdsRef.current.forEach(id => {
+      if (!currentActiveIds.has(id)) {
+        announcedTicketIdsRef.current.delete(id);
       }
-    };
-  }, [activeTicket]);
+    });
+
+    let hasNew = false;
+    activeList.forEach(t => {
+      if (!announcedTicketIdsRef.current.has(t.id)) {
+        announcedTicketIdsRef.current.add(t.id);
+        speechQueueRef.current.push(t);
+        hasNew = true;
+      }
+    });
+
+    if (hasNew) {
+      processSpeechQueue();
+    }
+  }, [tickets, isDBReady]);
 
   // Trigger a temporary visual toast on the screen when a keyboard shortcut is activated
   const triggerShortcutNotification = (actionName: string, keyName: string) => {
@@ -798,6 +1594,109 @@ export default function App() {
       return nextCount;
     });
   };
+
+  const handleToggleWaitlistPause = async () => {
+    if (sendClientAction('toggle_waitlist_pause')) return;
+    
+    const nextVal = !isWaitlistPaused;
+    setIsWaitlistPaused(nextVal);
+    
+    if (deviceMode === 'server') {
+      addServerLog(`Lista de espera ${nextVal ? 'PAUSADA' : 'REANUDADA'}.`, nextVal ? 'warn' : 'success');
+    }
+    
+    if (!nextVal) {
+      // Resumed! Let's activate the first waiting ticket if no active ticket
+      if (!activeTicketRef.current) {
+        const waitingList = ticketsRef.current.filter((t) => t.status === 'waiting');
+        if (waitingList.length > 0) {
+          const first = waitingList[0];
+          const newActive: Ticket = {
+            ...first,
+            status: 'active',
+          };
+          const remainingWaiting = waitingList.slice(1);
+          const otherTickets = ticketsRef.current.filter((t) => t.status !== 'waiting' && t.status !== 'active');
+          const finalTickets = [...otherTickets, newActive, ...remainingWaiting];
+          
+          await dbSaveTicket(newActive);
+          setTickets(finalTickets);
+          setActiveTicket(newActive);
+          setAnnouncementCount(1);
+        }
+      }
+    }
+    forceRefocusInput();
+  };
+
+  const handleToggleAutonomousMode = async () => {
+    const nextVal = !isAutonomousMode;
+    setIsAutonomousMode(nextVal);
+    localStorage.setItem('isAutonomousMode', String(nextVal));
+
+    if (nextVal) {
+      // 1-Click Startup logic:
+      setDeviceMode('server');
+      localStorage.setItem('deviceMode', 'server');
+      setForcePCManualMode(false);
+
+      // Unlock sound and music
+      const updatedVoice = { ...voiceSettings, soundEnabled: true };
+      setVoiceSettings(updatedVoice);
+      await dbSaveSettings('voice_settings', updatedVoice);
+
+      const updatedMusic = { ...musicConfig, integratedEnabled: true };
+      setMusicConfig(updatedMusic);
+      musicController.setConfig(updatedMusic);
+      await dbSaveSettings('music_settings', updatedMusic);
+
+      musicController.play();
+
+      addServerLog("⚙️ MODO AUTÓNOMO ACTIVADO: Servidor iniciado, audio desbloqueado, música ambiental en reproducción y auto-procesamiento de colas listo.", "success");
+    } else {
+      addServerLog("⚙️ MODO AUTÓNOMO DESACTIVADO. Volviendo a control manual.", "warn");
+    }
+  };
+
+  // Autonomous auto-caller loop
+  useEffect(() => {
+    if (!isAutonomousMode || !isAutoCallActive || deviceMode === 'client' || isWaitlistPaused) return;
+
+    const interval = setInterval(async () => {
+      // Get chronological waiting tickets
+      const waitingList = [...ticketsRef.current]
+        .filter((t) => t.status === 'waiting')
+        .sort((a, b) => {
+          const aPri = a.isPriority ? 1 : 0;
+          const bPri = b.isPriority ? 1 : 0;
+          if (aPri !== bPri) return bPri - aPri;
+          return a.createdAt - b.createdAt;
+        });
+
+      if (waitingList.length > 0) {
+        if (!activeTicketRef.current) {
+          addServerLog("🤖 Autopiloto: Auto-llamando siguiente ticket en espera.", "info");
+          await handleCallNext();
+        } else {
+          const activeTime = activeTicketRef.current.completedAt || activeTicketRef.current.createdAt;
+          if (Date.now() - activeTime > 15000) {
+            addServerLog(`🤖 Autopiloto: Auto-entregando ticket #${activeTicketRef.current.number} para llamar al siguiente.`, "info");
+            await handleMarkDelivered(activeTicketRef.current.id);
+            await handleCallNext();
+          }
+        }
+      } else if (activeTicketRef.current) {
+        // No waiting tickets, auto-deliver active after 15 seconds to keep the screen tidy
+        const activeTime = activeTicketRef.current.completedAt || activeTicketRef.current.createdAt;
+        if (Date.now() - activeTime > 15000) {
+          addServerLog(`🤖 Autopiloto: Auto-entregando ticket #${activeTicketRef.current.number} para mantener la pantalla despejada.`, "info");
+          await handleMarkDelivered(activeTicketRef.current.id);
+        }
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [isAutonomousMode, isAutoCallActive, isWaitlistPaused, deviceMode]);
 
   const handleKeyDownRef = useRef<any>(null);
 
@@ -849,6 +1748,19 @@ export default function App() {
           );
           return nextVal;
         });
+        forceRefocusInput();
+        return;
+      }
+
+      // PAUSE/RESUME WAITLIST
+      if (shortcutConfig.pauseResumeWaitlist && matchesShortcut(e, shortcutConfig.pauseResumeWaitlist)) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleToggleWaitlistPause();
+        triggerShortcutNotification(
+          SHORTCUT_NAMES.pauseResumeWaitlist,
+          `${shortcutConfig.pauseResumeWaitlist}`
+        );
         forceRefocusInput();
         return;
       }
@@ -1004,19 +1916,12 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         setLastFocusedList((prev) => {
-          let nextVal: 'waiting' | 'pending' | 'missing' = 'waiting';
-          if (e.key === 'ArrowLeft') {
-            if (prev === 'waiting') nextVal = 'missing';
-            else if (prev === 'pending') nextVal = 'waiting';
-            else if (prev === 'missing') nextVal = 'pending';
-          } else {
-            if (prev === 'waiting') nextVal = 'pending';
-            else if (prev === 'pending') nextVal = 'missing';
-            else if (prev === 'missing') nextVal = 'waiting';
-          }
-          const listNameEs = nextVal === 'waiting' ? 'En espera' : nextVal === 'pending' ? 'Pausa' : 'Desaparecidos';
+          let nextVal: 'waiting' | 'missing' = 'waiting';
+          if (prev === 'waiting') nextVal = 'missing';
+          else nextVal = 'waiting';
+          const listNameEs = nextVal === 'waiting' ? 'En espera' : 'Desaparecidos';
           triggerShortcutNotification(`Enfoque: ${listNameEs}`, 'Navegación');
-          return nextVal;
+          return nextVal as any;
         });
         forceRefocusInput();
         return;
@@ -1049,8 +1954,8 @@ export default function App() {
   }, []);
 
   // 5. Ticket Actions Operations
-  const handleAddTicket = async (number: string) => {
-    if (sendClientAction('add_ticket', { number })) return;
+  const handleAddTicket = async (number: string, fromOcr = false) => {
+    if (sendClientAction('add_ticket', { number, fromOcr })) return;
     // 3-digit normalization helper
     const normalizedNum = String(parseInt(number, 10));
 
@@ -1059,34 +1964,67 @@ export default function App() {
       (t) => t.number === normalizedNum && (t.status === 'active' || t.status === 'waiting')
     );
     if (isDuplicate) {
-      // Just shake input or return silently (as per specs, do not block the active screen flow with popups)
+      triggerConfigSavedToast(`⚠ Ticket #${normalizedNum} ya registrado`);
+      if (deviceMode === 'server') {
+        addServerLog(`Ticket #${normalizedNum} (${fromOcr ? 'OCR' : 'Manual'}) duplicado ignorado.`, 'warn');
+      }
       forceRefocusInput();
       return;
     }
 
+    const ocrMode = appConfig.ocrInputMode || 'direct_listos';
+
+    if (fromOcr && ocrMode === 'waiting') {
+      const newTicket: Ticket = {
+        id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+        number: normalizedNum,
+        createdAt: Date.now(),
+        status: 'waiting',
+      };
+      const updatedTickets = [...tickets, newTicket];
+      setTickets(updatedTickets);
+      await dbSaveTicket(newTicket);
+      triggerConfigSavedToast(`✔ Ticket #${normalizedNum} añadido a Espera`);
+      if (deviceMode === 'server') {
+        addServerLog(`Ticket #${normalizedNum} (OCR) -> Espera.`, 'info');
+      }
+      forceRefocusInput();
+      return;
+    }
+
+    // FLUJO UNIFICADO MANUAL + OCR AUTÓNOMO
     const newTicket: Ticket = {
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
       number: normalizedNum,
       createdAt: Date.now(),
-      status: 'waiting',
+      completedAt: Date.now(),
+      status: 'active',
     };
 
-    // If no active ticket is present, and autoActivateFirstTicket is true, it goes active immediately
-    const shouldActivate = !activeTicket && (appConfig.autoActivateFirstTicket !== false);
-    if (shouldActivate) {
-      newTicket.status = 'active';
-      
-      const updatedTickets = [...tickets, newTicket];
-      setTickets(updatedTickets);
+    const updatedTickets = [...tickets, newTicket];
+    setTickets(updatedTickets);
+    await dbSaveTicket(newTicket);
+
+    // CASO 1: Si no hay ningún ticket activo -> Se vuelve el ticket activo principal y se anuncia en TV + Audio
+    if (!activeTicket) {
       setActiveTicket(newTicket);
       setAnnouncementCount(1);
-      
-      await dbSaveTicket(newTicket);
+      triggerConfigSavedToast(`✔ Ticket #${normalizedNum} en LISTOS (Llamando en TV)`);
+
+      if (voiceSettings.soundEnabled) {
+        playNotificationSound();
+      }
+      const msg = voiceSettings.customPhrase
+        ? voiceSettings.customPhrase.replace('{number}', normalizedNum)
+        : `Número ${normalizedNum}, pedido listo`;
+      speakText(msg, voiceSettings);
     } else {
-      const updatedTickets = [...tickets, newTicket];
-      setTickets(updatedTickets);
-      
-      await dbSaveTicket(newTicket);
+      // CASO 2: Ya existe un ticket activo -> Se agrega en cola a "Listos para Entregar" detrás de él
+      triggerConfigSavedToast(`✔ Ticket #${normalizedNum} añadido a LISTOS PARA ENTREGAR`);
+    }
+
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${normalizedNum} (${fromOcr ? 'OCR' : 'Manual'}) -> LISTOS PARA ENTREGAR -> TV.`, 'success');
     }
     forceRefocusInput();
   };
@@ -1094,86 +2032,156 @@ export default function App() {
   const handleMarkDelivered = async (id: string) => {
     if (sendClientAction('mark_delivered', { id })) return;
     const completedAt = Date.now();
-    const currentActive = activeTicket;
-    if (!currentActive || currentActive.id !== id) {
+    
+    // Check for target ticket
+    const targetTicket = tickets.find((t) => t.id === id);
+    if (!targetTicket) {
       forceRefocusInput();
       return;
     }
 
-    // Update old active to delivered
-    const updatedOldActive: Ticket = {
-      ...currentActive,
-      status: 'delivered',
-      completedAt,
-      totalTime: Math.max(0, Math.floor((completedAt - currentActive.createdAt) / 1000)),
-    };
+    const ticketsToDeliver = [targetTicket];
+    let updatedTickets = [...tickets];
+    
+    for (const ticket of ticketsToDeliver) {
+      if (deviceMode === 'server') {
+        addServerLog(`Ticket #${ticket.number} marcado como entregado/completado.`, 'success');
+      }
 
-    await dbSaveTicket(updatedOldActive);
+      const updatedTicket: Ticket = {
+        ...ticket,
+        status: 'delivered',
+        completedAt,
+        totalTime: Math.max(0, Math.floor((completedAt - ticket.createdAt) / 1000)),
+      };
 
-    // FIFO: Fetch next in line
-    const waitingList = tickets.filter((t) => t.status === 'waiting');
-    let nextActive: Ticket | null = null;
-    let nextWaiting: Ticket[] = [];
-
-    if (waitingList.length > 0) {
-      // First waiting becomes active
-      const first = waitingList[0];
-      nextActive = { ...first, status: 'active' };
-      nextWaiting = waitingList.slice(1).map((t) => ({ ...t }));
-      
-      await dbSaveTicket(nextActive);
+      await dbSaveTicket(updatedTicket);
+      updatedTickets = updatedTickets.map((t) => (t.id === ticket.id ? updatedTicket : t));
     }
 
-    // Merge other existing tickets
-    const finishedTickets = tickets.filter((t) => t.status !== 'waiting' && t.status !== 'active');
-    const finalTickets = [...finishedTickets, updatedOldActive, ...nextWaiting];
+    setTickets(updatedTickets);
 
-    setTickets(finalTickets);
-    setActiveTicket(nextActive);
-    setAnnouncementCount(nextActive ? 1 : 0);
+    // CASO 3: Auto-llamador -> Al entregar el ticket activo actual (#541), el siguiente en la lista de Listos (#542) pasa a ser ACTIVO automáticamente
+    if (activeTicket && ticketsToDeliver.some((t) => t.id === activeTicket.id)) {
+      const remainingActive = updatedTickets
+        .filter((t) => t.status === 'active' && !ticketsToDeliver.some(td => td.id === t.id))
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)); // FIFO: el más antiguo primero
+
+      if (remainingActive.length > 0) {
+        const nextInLine = remainingActive[0];
+        setActiveTicket(nextInLine);
+        setAnnouncementCount(1);
+
+        if (voiceSettings.soundEnabled) {
+          playNotificationSound();
+        }
+        const msg = voiceSettings.customPhrase
+          ? voiceSettings.customPhrase.replace('{number}', nextInLine.number)
+          : `Número ${nextInLine.number}, pedido listo`;
+        speakText(msg, voiceSettings);
+      } else {
+        const waitingList = updatedTickets.filter((t) => t.status === 'waiting');
+        if (waitingList.length > 0 && appConfig.autoActivateFirstTicket !== false) {
+          const nextWaiting = waitingList[0];
+          nextWaiting.status = 'active';
+          nextWaiting.completedAt = Date.now();
+          await dbSaveTicket(nextWaiting);
+          setActiveTicket(nextWaiting);
+          setAnnouncementCount(1);
+
+          if (voiceSettings.soundEnabled) {
+            playNotificationSound();
+          }
+          const msg = voiceSettings.customPhrase
+            ? voiceSettings.customPhrase.replace('{number}', nextWaiting.number)
+            : `Número ${nextWaiting.number}, pedido listo`;
+          speakText(msg, voiceSettings);
+        } else {
+          setActiveTicket(null);
+          setAnnouncementCount(0);
+        }
+      }
+    }
+
+    setTransitionNotification({
+      number: activeTicket && activeTicket.id === id ? activeTicket.number : targetTicket.number,
+      type: 'delivered',
+      id: Date.now(),
+    });
+
     forceRefocusInput();
   };
 
   const handleMarkPending = async (id: string) => {
     if (sendClientAction('mark_pending', { id })) return;
     const pausedAt = Date.now();
-    const currentActive = activeTicket;
-    if (!currentActive || currentActive.id !== id) {
+    const targetTicket = tickets.find((t) => t.id === id);
+    if (!targetTicket) {
       forceRefocusInput();
       return;
     }
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${targetTicket.number} movido a preparación.`, 'warn');
+    }
 
-    // Update old active to pending (Pausado)
-    const updatedOldActive: Ticket = {
-      ...currentActive,
+    const updatedTicket: Ticket = {
+      ...targetTicket,
       status: 'pending',
       pendingAt: pausedAt,
     };
 
-    await dbSaveTicket(updatedOldActive);
+    await dbSaveTicket(updatedTicket);
 
-    // FIFO: Fetch next in line
-    const waitingList = tickets.filter((t) => t.status === 'waiting');
-    let nextActive: Ticket | null = null;
-    let nextWaiting: Ticket[] = [];
+    const updatedTickets = tickets.map((t) => (t.id === id ? updatedTicket : t));
+    setTickets(updatedTickets);
 
-    if (waitingList.length > 0) {
-      const first = waitingList[0];
-      nextActive = { ...first, status: 'active' };
-      nextWaiting = waitingList.slice(1).map((t) => ({ ...t }));
-      
-      await dbSaveTicket(nextActive);
+    if (activeTicket && activeTicket.id === id) {
+      const remainingActive = updatedTickets.filter((t) => t.status === 'active' && t.id !== id);
+      if (remainingActive.length > 0) {
+        const newest = [...remainingActive].sort((a, b) => {
+          const tA = a.completedAt || a.createdAt || 0;
+          const tB = b.completedAt || b.createdAt || 0;
+          return tB - tA;
+        })[0];
+        setActiveTicket(newest);
+        setAnnouncementCount(1);
+      } else {
+        setActiveTicket(null);
+        setAnnouncementCount(0);
+      }
     }
 
-    const finishedTickets = tickets.filter((t) => t.status !== 'waiting' && t.status !== 'active');
-    const finalTickets = [...finishedTickets, updatedOldActive, ...nextWaiting];
+    setTransitionNotification({
+      number: targetTicket.number,
+      type: 'pending',
+      id: Date.now(),
+    });
 
-    setTickets(finalTickets);
-    setActiveTicket(nextActive);
-    setAnnouncementCount(nextActive ? 1 : 0);
+    forceRefocusInput();
+  };
+
+  const handleMoveToPending = async (id: string) => {
+    if (sendClientAction('move_to_pending', { id })) return;
+    const pausedAt = Date.now();
+    const ticket = tickets.find((t) => t.id === id);
+    if (!ticket) return;
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${ticket.number} movido a la sección de preparación.`, 'warn');
+    }
+
+    const updated: Ticket = {
+      ...ticket,
+      status: 'pending',
+      pendingAt: pausedAt,
+    };
+
+    await dbSaveTicket(updated);
+
+    const updatedTickets = tickets.map((t) => (t.id === id ? updated : t));
+    setTickets(updatedTickets);
 
     setTransitionNotification({
-      number: currentActive.number,
+      number: ticket.number,
       type: 'pending',
       id: Date.now(),
     });
@@ -1184,43 +2192,44 @@ export default function App() {
   const handleMarkMissing = async (id: string) => {
     if (sendClientAction('mark_missing', { id })) return;
     const missingAt = Date.now();
-    const currentActive = activeTicket;
-    if (!currentActive || currentActive.id !== id) {
+    const targetTicket = tickets.find((t) => t.id === id);
+    if (!targetTicket) {
       forceRefocusInput();
       return;
     }
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${targetTicket.number} marcado como desaparecido/perdido.`, 'warn');
+    }
 
-    // Update old active to missing (Desaparecido)
-    const updatedOldActive: Ticket = {
-      ...currentActive,
+    const updatedTicket: Ticket = {
+      ...targetTicket,
       status: 'missing',
       completedAt: missingAt,
     };
 
-    await dbSaveTicket(updatedOldActive);
+    await dbSaveTicket(updatedTicket);
 
-    // FIFO: Fetch next in line
-    const waitingList = tickets.filter((t) => t.status === 'waiting');
-    let nextActive: Ticket | null = null;
-    let nextWaiting: Ticket[] = [];
+    const updatedTickets = tickets.map((t) => (t.id === id ? updatedTicket : t));
+    setTickets(updatedTickets);
 
-    if (waitingList.length > 0) {
-      const first = waitingList[0];
-      nextActive = { ...first, status: 'active' };
-      nextWaiting = waitingList.slice(1).map((t) => ({ ...t }));
-      
-      await dbSaveTicket(nextActive);
+    if (activeTicket && activeTicket.id === id) {
+      const remainingActive = updatedTickets.filter((t) => t.status === 'active' && t.id !== id);
+      if (remainingActive.length > 0) {
+        const newest = [...remainingActive].sort((a, b) => {
+          const tA = a.completedAt || a.createdAt || 0;
+          const tB = b.completedAt || b.createdAt || 0;
+          return tB - tA;
+        })[0];
+        setActiveTicket(newest);
+        setAnnouncementCount(1);
+      } else {
+        setActiveTicket(null);
+        setAnnouncementCount(0);
+      }
     }
 
-    const finishedTickets = tickets.filter((t) => t.status !== 'waiting' && t.status !== 'active');
-    const finalTickets = [...finishedTickets, updatedOldActive, ...nextWaiting];
-
-    setTickets(finalTickets);
-    setActiveTicket(nextActive);
-    setAnnouncementCount(nextActive ? 1 : 0);
-
     setTransitionNotification({
-      number: currentActive.number,
+      number: targetTicket.number,
       type: 'missing',
       id: Date.now(),
     });
@@ -1356,36 +2365,17 @@ export default function App() {
       return;
     }
 
-    const currentActive = activeTicket;
-    const waitingList = tickets.filter((t) => t.status === 'waiting');
-    let newWaitingList: Ticket[] = [];
-
-    if (currentActive) {
-      // Demote active to waiting status
-      const demotedActive: Ticket = {
-        ...currentActive,
-        status: 'waiting',
-      };
-      await dbSaveTicket(demotedActive);
-
-      // Place demoted active ticket at index 0 of the waiting list
-      newWaitingList = [demotedActive, ...waitingList];
-    } else {
-      newWaitingList = waitingList;
-    }
-
-    // Promote paused ticket to active
+    // Promote paused ticket to active/Listo
     const newActive: Ticket = {
       ...selectedTicket,
       status: 'active',
       recoveredAt: Date.now(),
+      completedAt: Date.now(),
     };
     await dbSaveTicket(newActive);
 
-    const otherTickets = tickets.filter((t) => t.id !== id && t.status !== 'waiting' && t.status !== 'active');
-    const finalTickets = [...otherTickets, newActive, ...newWaitingList];
-
-    setTickets(finalTickets);
+    const updatedTickets = tickets.map((t) => (t.id === id ? newActive : t));
+    setTickets(updatedTickets);
     setActiveTicket(newActive);
     setAnnouncementCount(1);
 
@@ -1409,8 +2399,25 @@ export default function App() {
     };
     await dbSaveTicket(updatedTicket);
 
-    const otherTickets = tickets.filter((t) => t.id !== id);
-    setTickets([...otherTickets, updatedTicket]);
+    const updatedTickets = tickets.map((t) => (t.id === id ? updatedTicket : t));
+    setTickets(updatedTickets);
+
+    if (activeTicket && activeTicket.id === id) {
+      const remainingActive = updatedTickets.filter((t) => t.status === 'active' && t.id !== id);
+      if (remainingActive.length > 0) {
+        const newest = [...remainingActive].sort((a, b) => {
+          const tA = a.completedAt || a.createdAt || 0;
+          const tB = b.completedAt || b.createdAt || 0;
+          return tB - tA;
+        })[0];
+        setActiveTicket(newest);
+        setAnnouncementCount(1);
+      } else {
+        setActiveTicket(null);
+        setAnnouncementCount(0);
+      }
+    }
+
     forceRefocusInput();
   };
 
@@ -1448,8 +2455,8 @@ export default function App() {
     };
     await dbSaveTicket(updatedTicket);
 
-    const otherTickets = tickets.filter((t) => t.id !== id);
-    setTickets([...otherTickets, updatedTicket]);
+    const updatedTickets = tickets.map((t) => (t.id === id ? updatedTicket : t));
+    setTickets(updatedTickets);
 
     setTransitionNotification({
       number: ticket.number,
@@ -1459,99 +2466,208 @@ export default function App() {
     forceRefocusInput();
   };
 
+  const handleRestoreTicket = async (id: string) => {
+    if (sendClientAction('restore_ticket', { id })) return;
+    const targetTicket = tickets.find((t) => t.id === id);
+    if (!targetTicket) {
+      forceRefocusInput();
+      return;
+    }
+
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${targetTicket.number} restaurado a la lista de espera.`, 'success');
+    }
+
+    const updatedTicket: Ticket = {
+      ...targetTicket,
+      status: 'waiting',
+      completedAt: undefined,
+      totalTime: undefined,
+    };
+
+    await dbSaveTicket(updatedTicket);
+
+    const updatedTickets = tickets.map((t) => (t.id === id ? updatedTicket : t));
+    setTickets(updatedTickets);
+
+    setTransitionNotification({
+      number: targetTicket.number,
+      type: 'waiting',
+      id: Date.now(),
+    });
+
+    forceRefocusInput();
+  };
+
   const handleCallNext = async () => {
     if (sendClientAction('call_next')) return;
-    // Rotate operation: Active goes to the END of waiting list, next waiting becomes active
-    const currentActive = activeTicket;
-    if (!currentActive) {
-      forceRefocusInput();
-      return;
-    }
-
-    const waitingList = tickets.filter((t) => t.status === 'waiting');
     
-    if (waitingList.length === 0) {
-      // Nothing to rotate with, just replay announcement count
-      setAnnouncementCount((prev) => prev + 1);
+    try {
+      // Sort waiting list by priority first, then chronologically
+      const sortedWaitingList = [...tickets.filter((t) => t.status === 'waiting')].sort((a, b) => {
+        const aPri = a.isPriority ? 1 : 0;
+        const bPri = b.isPriority ? 1 : 0;
+        if (aPri !== bPri) {
+          return bPri - aPri;
+        }
+        return a.createdAt - b.createdAt;
+      });
+      
+      if (sortedWaitingList.length === 0) {
+        // Nothing to call, just replay announcement of active ticket if exists
+        if (activeTicket) {
+          setAnnouncementCount((prev) => prev + 1);
+          triggerConfigSavedToast('Repitiendo llamada del ticket activo.');
+        } else {
+          triggerConfigSavedToast('No hay tickets listos para llamar.');
+        }
+        forceRefocusInput();
+        return;
+      }
+
+      // Auto-grouping of consecutive ticket numbers
+      const promotedTickets: Ticket[] = [sortedWaitingList[0]];
+      const firstNum = parseInt(sortedWaitingList[0].number, 10);
+      
+      if (!isNaN(firstNum)) {
+        let currentNum = firstNum;
+        for (let i = 1; i < sortedWaitingList.length; i++) {
+          const nextTicket = sortedWaitingList[i];
+          const nextNum = parseInt(nextTicket.number, 10);
+          // group if consecutive AND they share the same priority status (to prevent mixing VIP/normal in confusing ways)
+          if (!isNaN(nextNum) && nextNum === currentNum + 1 && !!nextTicket.isPriority === !!sortedWaitingList[0].isPriority) {
+            promotedTickets.push(nextTicket);
+            currentNum = nextNum;
+          } else {
+            break;
+          }
+        }
+      }
+
+      const completedAt = Date.now();
+      const updatedPromoted = promotedTickets.map(ticket => ({
+        ...ticket,
+        status: 'active' as const,
+        completedAt,
+      }));
+
+      // Save all to database
+      for (const ticket of updatedPromoted) {
+        await dbSaveTicket(ticket);
+      }
+
+      // Update local tickets state
+      const promotedIds = new Set(promotedTickets.map(t => t.id));
+      const updatedTickets = tickets.map((t) => {
+        const found = updatedPromoted.find(p => p.id === t.id);
+        return found ? found : t;
+      });
+
+      setTickets(updatedTickets);
+
+      // Format grouped ticket number string
+      let groupedNumberString = '';
+      if (promotedTickets.length === 1) {
+        groupedNumberString = promotedTickets[0].number;
+      } else {
+        const numbers = promotedTickets.map(t => t.number);
+        if (voiceSettings.lang === 'es' || voiceSettings.lang === 'ca') {
+          const last = numbers.pop();
+          groupedNumberString = `${numbers.join(', ')} y ${last}`;
+        } else {
+          const last = numbers.pop();
+          groupedNumberString = `${numbers.join(', ')} and ${last}`;
+        }
+        if (deviceMode === 'server') {
+          addServerLog(`Agrupación inteligente activada: Llamando tickets ${groupedNumberString} juntos.`, 'info');
+        }
+      }
+
+      const mergedActiveTicket: Ticket = {
+        id: promotedTickets[0].id,
+        number: groupedNumberString,
+        status: 'active' as const,
+        createdAt: promotedTickets[0].createdAt,
+        completedAt,
+        isPriority: promotedTickets.some(t => t.isPriority),
+      };
+
+      setActiveTicket(mergedActiveTicket);
+      setAnnouncementCount(1);
+
+      setTransitionNotification({
+        number: groupedNumberString,
+        type: 'active',
+        id: Date.now(),
+      });
+
+      triggerConfigSavedToast(`Llamando Ticket #${groupedNumberString}`);
+      if (deviceMode === 'server') {
+        addServerLog(`📢 Ticket #${groupedNumberString} llamado con éxito y transmitido a pantallas.`, 'success');
+      }
+    } catch (error: any) {
+      console.error('Error in handleCallNext:', error);
+      triggerConfigSavedToast(`Error al llamar ticket: ${error.message || error}`);
+      if (deviceMode === 'server') {
+        addServerLog(`❌ Fallo al llamar siguiente: ${error.message || error}`, 'error');
+      }
+      throw error;
+    } finally {
+      forceRefocusInput();
+    }
+  };
+
+  const handleTogglePriority = async (id: string) => {
+    if (sendClientAction('toggle_priority', { id })) return;
+    const targetTicket = tickets.find((t) => t.id === id);
+    if (!targetTicket) {
       forceRefocusInput();
       return;
     }
 
-    // Demote current active to waiting
-    const demotedActive: Ticket = {
-      ...currentActive,
-      status: 'waiting',
+    const updatedTicket: Ticket = {
+      ...targetTicket,
+      isPriority: !targetTicket.isPriority,
     };
+    await dbSaveTicket(updatedTicket);
 
-    // Promote first waiting to active
-    const promotedFirst = waitingList[0];
-    const newActive: Ticket = {
-      ...promotedFirst,
-      status: 'active',
-    };
+    const updatedTickets = tickets.map((t) => (t.id === id ? updatedTicket : t));
+    setTickets(updatedTickets);
 
-    // New waiting is remaining waiting list PLUS the demoted active ticket at the end
-    const remainingWaiting = waitingList.slice(1);
-    const newWaitingList = [...remainingWaiting, demotedActive];
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${targetTicket.number} marcado como ${updatedTicket.isPriority ? 'PRIORITARIO VIP' : 'Normal'}.`, 'success');
+    }
 
-    // Save changes to db
-    await dbSaveTicket(demotedActive);
-    await dbSaveTicket(newActive);
-
-    const finishedTickets = tickets.filter((t) => t.status !== 'waiting' && t.status !== 'active');
-    const finalTickets = [...finishedTickets, newActive, ...newWaitingList];
-
-    setTickets(finalTickets);
-    setActiveTicket(newActive);
-    setAnnouncementCount(1);
     forceRefocusInput();
   };
 
   const handleRaisePriority = async (id: string) => {
     if (sendClientAction('raise_priority', { id })) return;
-    // Boost operation: Selected waiting ticket goes active immediately.
-    // Old active goes to the very FIRST position of the waiting list.
     const selectedTicket = tickets.find((t) => t.id === id);
     if (!selectedTicket || selectedTicket.status !== 'waiting') {
       forceRefocusInput();
       return;
     }
 
-    const currentActive = activeTicket;
-    const waitingList = tickets.filter((t) => t.status === 'waiting');
-
-    // Remove selected ticket from waiting list
-    const filteredWaiting = waitingList.filter((t) => t.id !== id);
-
-    let newWaitingList: Ticket[] = [];
-
-    if (currentActive) {
-      // Demote active to waiting status
-      const demotedActive: Ticket = {
-        ...currentActive,
-        status: 'waiting',
-      };
-      await dbSaveTicket(demotedActive);
-
-      // Place demoted active ticket at index 0 of the waiting list
-      newWaitingList = [demotedActive, ...filteredWaiting];
-    } else {
-      newWaitingList = filteredWaiting;
-    }
-
-    // Promote selected to active
+    // Promote selected to active/Listo
     const newActive: Ticket = {
       ...selectedTicket,
       status: 'active',
+      completedAt: Date.now(),
     };
     await dbSaveTicket(newActive);
 
-    const finishedTickets = tickets.filter((t) => t.status !== 'waiting' && t.status !== 'active');
-    const finalTickets = [...finishedTickets, newActive, ...newWaitingList];
-
-    setTickets(finalTickets);
+    const updatedTickets = tickets.map((t) => (t.id === id ? newActive : t));
+    setTickets(updatedTickets);
     setActiveTicket(newActive);
     setAnnouncementCount(1);
+
+    setTransitionNotification({
+      number: selectedTicket.number,
+      type: 'active',
+      id: Date.now(),
+    });
+
     forceRefocusInput();
   };
 
@@ -1559,25 +2675,23 @@ export default function App() {
     if (sendClientAction('delete_ticket', { id })) return;
     await dbDeleteTicket(id);
 
-    // If it was the active ticket, trigger next in queue
+    const updatedTickets = tickets.filter((t) => t.id !== id);
+    setTickets(updatedTickets);
+
     if (activeTicket && activeTicket.id === id) {
-      const waitingList = tickets.filter((t) => t.status === 'waiting');
-      let nextActive: Ticket | null = null;
-      let nextWaiting: Ticket[] = [];
-
-      if (waitingList.length > 0) {
-        const first = waitingList[0];
-        nextActive = { ...first, status: 'active' };
-        nextWaiting = waitingList.slice(1);
-        await dbSaveTicket(nextActive);
+      const remainingActive = updatedTickets.filter((t) => t.status === 'active');
+      if (remainingActive.length > 0) {
+        const newest = [...remainingActive].sort((a, b) => {
+          const tA = a.completedAt || a.createdAt || 0;
+          const tB = b.completedAt || b.createdAt || 0;
+          return tB - tA;
+        })[0];
+        setActiveTicket(newest);
+        setAnnouncementCount(1);
+      } else {
+        setActiveTicket(null);
+        setAnnouncementCount(0);
       }
-
-      const finishedTickets = tickets.filter((t) => t.id !== id && t.status !== 'waiting' && t.status !== 'active');
-      setTickets([...finishedTickets, ...nextWaiting]);
-      setActiveTicket(nextActive);
-      setAnnouncementCount(nextActive ? 1 : 0);
-    } else {
-      setTickets(tickets.filter((t) => t.id !== id));
     }
     forceRefocusInput();
   };
@@ -1587,121 +2701,458 @@ export default function App() {
     setTickets(tickets.filter((t) => t.status !== status));
   };
 
+  const handleCustomAnnouncement = () => {
+    if (!customTTSInput.trim()) return;
+    musicController.startAnnouncement();
+    if (voiceSettings.soundEnabled) {
+      playNotificationSound();
+    }
+    speakText(customTTSInput.trim(), voiceSettings, undefined, () => {
+      musicController.endAnnouncement();
+    });
+    triggerConfigSavedToast(`Anunciando por voz: "${customTTSInput.trim()}"`);
+    setCustomTTSInput('');
+  };
+
+  const handleClearQueue = async () => {
+    if (window.confirm('¿Deseas vaciar todos los tickets activos y en espera?')) {
+      const remaining = tickets.filter((t) => t.status !== 'waiting' && t.status !== 'active');
+      const toDelete = tickets.filter((t) => t.status === 'waiting' || t.status === 'active');
+      for (const t of toDelete) {
+        await dbDeleteTicket(t.id);
+      }
+      setTickets(remaining);
+      setActiveTicket(null);
+      setAnnouncementCount(0);
+      triggerConfigSavedToast('Cola de tickets activos y en espera vaciada.');
+    }
+  };
+
   // 5. Config Saves
   const handleSaveVoiceSettings = async (settings: VoiceSettings) => {
+    if (sendClientAction('save_voice_settings', { settings })) return;
     setVoiceSettings(settings);
     await dbSaveSettings('voice_settings', settings);
+    triggerConfigSavedToast('Ajustes de voz guardados.');
   };
 
   const handleSaveShortcutConfig = async (shortcuts: ShortcutConfig) => {
+    if (sendClientAction('save_shortcut_config', { shortcuts })) return;
     setShortcutConfig(shortcuts);
     await dbSaveSettings('shortcuts', shortcuts);
+    triggerConfigSavedToast('Atajos de teclado guardados.');
+  };
+
+  const processAndSaveMedia = async (config: AppConfig): Promise<AppConfig> => {
+    const updated = { ...config };
+    
+    // Process bg video
+    if (updated.publicDisplayBgVideo && updated.publicDisplayBgVideo.startsWith('data:')) {
+      await dbSaveSettings('media_bg_video', updated.publicDisplayBgVideo);
+      updated.publicDisplayBgVideo = 'indexeddb:bg_video';
+    }
+
+    // Process bg image
+    if (updated.publicDisplayBgImage && updated.publicDisplayBgImage.startsWith('data:')) {
+      await dbSaveSettings('media_bg_image', updated.publicDisplayBgImage);
+      updated.publicDisplayBgImage = 'indexeddb:bg_image';
+    }
+
+    // Process logo
+    if (updated.publicDisplayLogo && updated.publicDisplayLogo.startsWith('data:')) {
+      await dbSaveSettings('media_logo', updated.publicDisplayLogo);
+      updated.publicDisplayLogo = 'indexeddb:logo';
+    }
+
+    // Process standby images
+    if (updated.publicDisplayStandbyImages && Array.isArray(updated.publicDisplayStandbyImages)) {
+      const processedImages = [];
+      for (const img of updated.publicDisplayStandbyImages) {
+        if (img.url && img.url.startsWith('data:')) {
+          const idbKey = `media_standby_image_${img.id}`;
+          await dbSaveSettings(idbKey, img.url);
+          processedImages.push({
+            ...img,
+            url: `indexeddb:standby_image_${img.id}`
+          });
+        } else {
+          processedImages.push(img);
+        }
+      }
+      updated.publicDisplayStandbyImages = processedImages;
+    }
+
+    return updated;
   };
 
   const handleSaveAppConfig = async (config: AppConfig) => {
-    setAppConfig(config);
-    await dbSaveSettings('app_config', config);
+    const cleanConfig = await processAndSaveMedia(config);
+    if (sendClientAction('save_app_config', { config: cleanConfig })) return;
+    setAppConfig(cleanConfig);
+    await dbSaveSettings('app_config', cleanConfig);
+    triggerConfigSavedToast('Configuración general guardada.');
+
+    // Sync newly updated background images/videos to HTTP server for client TVs
+    if (deviceMode === 'server' && pairingCode) {
+      uploadAllMediaToServer(pairingCode);
+    }
   };
 
   const handleSaveMusicConfig = async (config: MusicConfig) => {
+    if (sendClientAction('save_music_config', { config })) return;
     setMusicConfig(config);
     musicController.setConfig(config);
     await dbSaveSettings('music_settings', config);
+    triggerConfigSavedToast('Ajustes de música ambiental guardados.');
+  };
+
+  const handleImportBackup = async (data: { tickets: any[], voiceSettings: any, appConfig: any, musicConfig: any }) => {
+    try {
+      if (data.tickets) {
+        setTickets(data.tickets);
+        await dbSaveTicketsBulk(data.tickets);
+      }
+      if (data.voiceSettings) {
+        setVoiceSettings(data.voiceSettings);
+        await dbSaveSettings('voice_settings', data.voiceSettings);
+      }
+      if (data.appConfig) {
+        setAppConfig(data.appConfig);
+        await dbSaveSettings('app_config', data.appConfig);
+      }
+      if (data.musicConfig) {
+        setMusicConfig(data.musicConfig);
+        await dbSaveSettings('music_settings', data.musicConfig);
+      }
+      addServerLog(`📥 Copia de seguridad restaurada con éxito: ${data.tickets?.length || 0} tickets cargados.`, 'success');
+    } catch (err: any) {
+      addServerLog(`❌ Error al importar respaldo: ${err.message || err}`, 'error');
+    }
+  };
+
+  const handleApproveDevice = (deviceId: string, deviceName: string, deviceType: string, remember: boolean) => {
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'auth_decision',
+        deviceId,
+        approved: true,
+        remember,
+        deviceName,
+        deviceType
+      }));
+    }
+    // Approve locally on server
+    setAuthorizedDevices(prev => {
+      const exists = prev.some(d => d.id === deviceId);
+      const newDevice = {
+        id: deviceId,
+        name: deviceName,
+        type: deviceType || 'Tablet',
+        status: 'authorized' as const,
+        remember,
+        lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+      };
+      if (exists) {
+        return prev.map(d => d.id === deviceId ? newDevice : d);
+      }
+      return [...prev, newDevice];
+    });
+
+    setPendingAuthRequests(prev => prev.filter(r => r.deviceId !== deviceId));
+    addServerLog(`Dispositivo "${deviceName}" PERMITIDO (Recordar: ${remember ? 'Sí' : 'No'})`, 'success');
+  };
+
+  const handleRejectDevice = (deviceId: string, deviceName: string, deviceType: string) => {
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'auth_decision',
+        deviceId,
+        approved: false,
+        remember: false,
+        deviceName,
+        deviceType
+      }));
+    }
+    // Mark as blocked locally to reject automatically in future
+    setAuthorizedDevices(prev => {
+      const exists = prev.some(d => d.id === deviceId);
+      const blockedDevice = {
+        id: deviceId,
+        name: deviceName,
+        type: deviceType || 'Tablet',
+        status: 'blocked' as const,
+        remember: false,
+        lastConnected: undefined
+      };
+      if (exists) {
+        return prev.map(d => d.id === deviceId ? blockedDevice : d);
+      }
+      return [...prev, blockedDevice];
+    });
+
+    setPendingAuthRequests(prev => prev.filter(r => r.deviceId !== deviceId));
+    addServerLog(`Dispositivo "${deviceName}" RECHAZADO y BLOQUEADO`, 'warn');
   };
 
   // Derived attributes
-  const waitingTickets = tickets.filter((t) => t.status === 'waiting');
+  const waitingTickets = [...tickets]
+    .filter((t) => t.status === 'waiting')
+    .sort((a, b) => {
+      const aPri = a.isPriority ? 1 : 0;
+      const bPri = b.isPriority ? 1 : 0;
+      if (aPri !== bPri) {
+        return bPri - aPri;
+      }
+      return a.createdAt - b.createdAt;
+    });
   const nextTicketNumber = waitingTickets.length > 0 ? waitingTickets[0].number : null;
 
+  const pendingMediaRequests = useRef<Set<string>>(new Set());
+
+  const handleMediaMissing = (mediaKey: string) => {
+    if (deviceMode === 'client') {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && pairingStatus === 'paired') {
+        socketRef.current.send(JSON.stringify({
+          type: 'client_action',
+          action: 'request_media',
+          payload: { mediaKey },
+          deviceName,
+        }));
+      } else {
+        pendingMediaRequests.current.add(mediaKey);
+      }
+    }
+  };
+
+  // Flush pending media requests once paired/connected
+  useEffect(() => {
+    if (deviceMode === 'client' && pairingStatus === 'paired' && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      if (pendingMediaRequests.current.size > 0) {
+        pendingMediaRequests.current.forEach((mediaKey) => {
+          socketRef.current?.send(JSON.stringify({
+            type: 'client_action',
+            action: 'request_media',
+            payload: { mediaKey },
+            deviceName,
+          }));
+        });
+        pendingMediaRequests.current.clear();
+      }
+    }
+  }, [pairingStatus, deviceMode]);
+
+  if (isDBReady && deviceMode === 'client' && clientRole === 'pantalla') {
+    return (
+      <PublicDisplayView
+        activeTicket={activeTicket}
+        tickets={tickets}
+        pairingStatus={pairingStatus}
+        serverIP={serverIP}
+        appConfig={appConfig}
+        onSelectMode={(mode) => {
+          handleSelectMode(mode);
+        }}
+        onMediaMissing={handleMediaMissing}
+        syncVersion={syncVersion}
+        lastSyncTime={lastSyncTime}
+        lastLatency={lastLatency}
+        lastReceivedEvent={lastReceivedEvent}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div 
+      className="min-h-screen flex flex-col font-sans transition-colors duration-300"
+      style={{
+        backgroundColor: 'var(--theme-bg, #020617)',
+        color: 'var(--theme-text, #f8fafc)',
+      }}
+    >
       
-      {/* Universal Top Navigation Header */}
-      <header className="border-b border-slate-900 bg-slate-900/40 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center font-black font-mono text-xl tracking-tighter text-white shadow-lg shadow-indigo-500/25">
+      {/* CABECERA FIJA SUPERIOR */}
+      <header 
+        className="border-b border-slate-800/50 backdrop-blur-md sticky top-0 z-50 px-4 py-2.5 transition-colors duration-300"
+        style={{
+          backgroundColor: 'var(--theme-card-bg, #0f172a)',
+          color: 'var(--theme-text, #f8fafc)',
+        }}
+      >
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-wrap">
+          
+          {/* Izquierda: Logo + Gestor de Tickets + Estado Servidor */}
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center font-black font-mono text-base text-white shadow-md shadow-indigo-500/20">
               T
             </div>
-            <div>
-              <h1 className="text-base font-extrabold text-white tracking-tight leading-none">
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-extrabold text-white tracking-tight leading-none">
                 Gestor de Tickets
               </h1>
-              <span className="text-[10px] text-indigo-400 font-mono tracking-wider uppercase">
-                Sistema de cola & OCR Web
+              <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                {deviceMode === 'server' ? 'SERVIDOR OK' : deviceMode === 'client' ? 'CLIENTE OK' : 'LOCAL OK'}
               </span>
             </div>
           </div>
 
-          {/* Nav Tabs */}
-          <nav className="flex bg-slate-950/80 p-1 border border-slate-900 rounded-xl max-w-full overflow-x-auto scrollbar-none">
-            <button
-              onClick={() => setActiveTab('board')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'board' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <LayoutGrid size={14} />
-              Panel Principal
+          {/* Centro: Indicadores pequeños con punto verde */}
+          <div className="hidden lg:flex items-center gap-2 bg-slate-900/60 px-3 py-1 border border-slate-800/80 rounded-xl text-[10px] font-mono text-slate-300">
+            <button onClick={() => setIsOcrPaused(!isOcrPaused)} className="flex items-center gap-1 hover:text-white transition-colors cursor-pointer">
+              <span className={`w-1.5 h-1.5 rounded-full ${isOcrPaused ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`}></span>
+              <span>OCR</span>
             </button>
-            <button
-              onClick={() => setActiveTab('ocr')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'ocr' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Camera size={14} />
-              Escáner OCR
+            <span className="text-slate-700">│</span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>IA</span>
+            </span>
+            <span className="text-slate-700">│</span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span>Cámara</span>
+            </span>
+            <span className="text-slate-700">│</span>
+            <span className="flex items-center gap-1">
+              <span className={`w-1.5 h-1.5 rounded-full ${pairingStatus === 'paired' || deviceMode === 'server' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+              <span>TV</span>
+            </span>
+            <span className="text-slate-700">│</span>
+            <button onClick={() => setMusicConfig({ ...musicConfig, enabled: !musicConfig.enabled })} className="flex items-center gap-1 hover:text-white transition-colors cursor-pointer">
+              <span className={`w-1.5 h-1.5 rounded-full ${musicConfig.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`}></span>
+              <span>Música</span>
             </button>
-            <button
-              onClick={() => setActiveTab('history')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'history' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
+            <span className="text-slate-700">│</span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span>WebSocket</span>
+            </span>
+            <span className="text-slate-700">│</span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span>Sync</span>
+            </span>
+          </div>
+
+          {/* Derecha: Hora + Indicador Dispositivo + Dispositivos + Configuración + Fullscreen */}
+          <div className="flex items-center gap-2 text-xs font-mono">
+            {/* Badge de Detección de Dispositivo */}
+            <span 
+              className="inline-flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg uppercase cursor-pointer"
+              onClick={() => setIsSettingsModalOpen(true)}
+              title="Ajustes de Diseño Responsive Independiente"
             >
-              <History size={14} />
-              Historial
-            </button>
+              {isPC && <Monitor size={13} className="text-indigo-400" />}
+              {isTablet && <Tablet size={13} className="text-amber-400" />}
+              {isMobile && <Smartphone size={13} className="text-emerald-400" />}
+              <span className="text-slate-200">{deviceType}</span>
+            </span>
+
+            <span className="text-indigo-300 font-bold px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg">
+              {clockTime || '00:00:00'}
+            </span>
+
+            <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-slate-400 bg-slate-900 px-2.5 py-1 border border-slate-800 rounded-lg">
+              <Smartphone size={12} className="text-emerald-400" />
+              <span>{connectedClients.filter(c => c.connected).length || 1} Devs</span>
+            </span>
+
             <button
-              onClick={() => setActiveTab('stats')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'stats' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <BarChart2 size={14} />
-              Métricas
-            </button>
-            <button
-              onClick={() => setActiveTab('settings')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'settings' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg cursor-pointer transition-all"
+              title="Configuración General"
             >
               <SettingsIcon size={14} />
-              Ajustes
             </button>
+
             <button
-              onClick={() => setActiveTab('devices')}
-              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'devices' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
+              onClick={toggleFullscreen}
+              className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg cursor-pointer transition-all"
+              title={isFullscreen ? "Salir de pantalla completa" : "Modo Pantalla Completa"}
             >
-              <Smartphone size={14} />
-              Dispositivos
-              {deviceMode === 'server' && connectedClients.some(c => c.connected) && (
-                <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
-              )}
-              {deviceMode === 'client' && pairingStatus === 'paired' && (
-                <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-              )}
+              {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
             </button>
-          </nav>
+          </div>
+
         </div>
       </header>
 
-      {/* Main Container Section */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8">
-        
+      {/* MENÚ DE COMPONENTES REDUCIDO */}
+      <div 
+        className="border-b border-slate-800/50 px-4 py-2 sticky top-[49px] z-40 transition-colors duration-300"
+        style={{
+          backgroundColor: 'var(--theme-bg, #020617)',
+          color: 'var(--theme-text, #f8fafc)',
+        }}
+      >
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 overflow-x-auto scrollbar-none">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveTab('board')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'board' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              }`}
+            >
+              <LayoutGrid size={14} />
+              <span>Panel</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('tv_view')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'tv_view' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              }`}
+            >
+              <Tv size={14} />
+              <span>Pantalla TV</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'history' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              }`}
+            >
+              <History size={14} />
+              <span>Historial</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('stats')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'stats' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              }`}
+            >
+              <BarChart2 size={14} />
+              <span>Estadísticas</span>
+            </button>
+
+            <button
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800 transition-all cursor-pointer"
+            >
+              <SettingsIcon size={14} />
+              <span>Configuración</span>
+            </button>
+          </div>
+
+          {/* Botón flotante para música */}
+          <button
+            onClick={() => setIsMusicModalOpen(true)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+              musicConfig.enabled
+                ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300 shadow-sm'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Music size={14} className={musicConfig.enabled ? "text-emerald-400 animate-pulse" : ""} />
+            <span>🎵 Música</span>
+          </button>
+        </div>
+      </div>
+
+      {/* CONTENIDO PRINCIPAL ADAPTATIVO */}
+      <main className={`flex-1 max-w-full lg:max-w-7xl w-full mx-auto p-3 md:p-4 overflow-x-hidden ${isMobile ? 'pb-24' : ''}`}>
         {!isDBReady ? (
           <div className="py-24 flex flex-col items-center justify-center text-center">
             <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div>
@@ -1710,34 +3161,122 @@ export default function App() {
         ) : (
           <div className="h-full">
             
-            {/* View Tab router */}
+            {/* VISTA 1: PANEL PRINCIPAL COMPACTO DE 3 COLUMNAS CON BARRA DE HERRAMIENTAS RÁPIDAS */}
             {activeTab === 'board' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              <div className="space-y-4">
                 
-                {/* Left Side: Rapid Keyboard Input & Call Next area */}
-                <div className="lg:col-span-5 space-y-6">
+                {/* BARRA DE HERRAMIENTAS RÁPIDAS DEL MENÚ PRINCIPAL */}
+                <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-2.5 backdrop-blur-md shadow-xl flex flex-wrap items-center justify-between gap-3">
                   
-                  {/* Rapid input component */}
-                  <ManualInput onAddTicket={handleAddTicket} />
+                  {/* Izquierda: Botón Prominente Llamar Siguiente + Campo de Megafonía */}
+                  <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[300px]">
+                    <button
+                      onClick={handleCallNext}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl shadow-lg shadow-emerald-600/25 flex items-center gap-2 cursor-pointer transition-all active:scale-95 shrink-0"
+                      title="Llamar al siguiente ticket en espera (Teclas N o Espacio)"
+                    >
+                      <Zap size={15} className="fill-current text-amber-300 animate-pulse" />
+                      <span>LLAMAR SIGUIENTE</span>
+                      {nextTicketNumber && (
+                        <span className="bg-emerald-950/90 border border-emerald-400/40 text-emerald-200 font-mono text-[10px] px-2 py-0.5 rounded-md font-extrabold">
+                          #{nextTicketNumber}
+                        </span>
+                      )}
+                    </button>
 
-                  {/* Active call board component */}
-                  <ActiveTicket
-                    activeTicket={activeTicket}
-                    announcementCount={announcementCount}
-                    onSpeakActive={handleRepeatCall}
-                    onMarkDelivered={handleMarkDelivered}
-                    onMarkPending={handleMarkPending}
-                    onMarkMissing={handleMarkMissing}
-                    onCallNext={handleCallNext}
-                    nextTicketNumber={nextTicketNumber}
-                    waitingCount={waitingTickets.length}
-                    activeGlowColor={appConfig.activeGlowColor}
-                  />
+                    {/* Megafonía TTS Directa */}
+                    <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1 flex-1 min-w-[220px]">
+                      <Megaphone size={14} className="text-indigo-400 shrink-0" />
+                      <input
+                        type="text"
+                        value={customTTSInput}
+                        onChange={(e) => setCustomTTSInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleCustomAnnouncement();
+                          }
+                        }}
+                        placeholder="Escribe mensaje o ticket para anunciar..."
+                        className="bg-transparent border-none text-xs text-slate-200 focus:outline-none w-full px-1 py-0.5 placeholder:text-slate-600 font-medium"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleCustomAnnouncement}
+                        disabled={!customTTSInput.trim()}
+                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-bold text-[10px] rounded-lg transition-all cursor-pointer shrink-0"
+                      >
+                        Anunciar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Derecha: Toggles y Controles de Herramientas */}
+                  <div className="flex items-center gap-2 overflow-x-auto scrollbar-none shrink-0 text-xs font-mono">
+                    <button
+                      onClick={handleToggleAutonomousMode}
+                      className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
+                        isAutonomousMode
+                          ? 'bg-amber-950/80 border-amber-500/50 text-amber-300 shadow-sm'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Auto-llamada inteligente de tickets"
+                    >
+                      <Brain size={13} className={isAutonomousMode ? "text-amber-400 animate-spin" : ""} />
+                      <span>Auto-Llamador: {isAutonomousMode ? 'ON' : 'OFF'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const next = !isOcrPaused;
+                        setIsOcrPaused(next);
+                        triggerConfigSavedToast(next ? 'Escáner OCR Pausado' : 'Escáner OCR Activo');
+                      }}
+                      className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
+                        !isOcrPaused
+                          ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300 shadow-sm'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Lector automático de cámara OCR"
+                    >
+                      <Camera size={13} className={!isOcrPaused ? "text-emerald-400 animate-pulse" : ""} />
+                      <span>OCR: {!isOcrPaused ? 'ACTIVO' : 'PAUSA'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleToggleWaitlistPause}
+                      className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
+                        isWaitlistPaused
+                          ? 'bg-rose-950/80 border-rose-500/50 text-rose-300 shadow-sm'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Pausar o reanudar asignación de cola"
+                    >
+                      <Pause size={13} className={isWaitlistPaused ? "text-rose-400 animate-pulse" : ""} />
+                      <span>Cola: {isWaitlistPaused ? 'PAUSADA' : 'OK'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleClearQueue}
+                      className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-rose-950/50 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-800/60 font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                      title="Vaciar tickets activos y en espera"
+                    >
+                      <RotateCcw size={13} />
+                      <span>Vaciar</span>
+                    </button>
+                  </div>
 
                 </div>
 
-                {/* Middle-Left: Waiting queue manager */}
-                <div className="lg:col-span-3 h-full">
+                {/* REJILLA DE 3 COLUMNAS */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                
+                {/* COLUMNA 1 (Izquierda): ENTRADA RÁPIDA + LISTA ESPERA COMPACTA */}
+                <div className="lg:col-span-3 space-y-4">
+                  {/* Entrada Rápida de Tickets 3 Dígitos */}
+                  <ManualInput onAddTicket={handleAddTicket} />
+
+                  {/* Lista de Espera Compacta en Filas */}
                   <WaitingList
                     tickets={waitingTickets}
                     onRaisePriority={handleRaisePriority}
@@ -1746,39 +3285,168 @@ export default function App() {
                     onSelectWaitingTicket={setSelectedWaitingTicketId}
                     onAddDirectTicket={handleAddDirectWaitingTicket}
                     waitingSelectedColor={appConfig.waitingSelectedColor}
-                  />
-                </div>
-
-                {/* Middle-Right: Pause queue manager */}
-                <div className="lg:col-span-2 h-full">
-                  <PendingList
-                    tickets={tickets.filter((t) => t.status === 'pending')}
-                    onSendToActive={handleActivateFromPause}
-                    onReturnToWaiting={handleReturnToWaiting}
+                    isWaitlistPaused={isWaitlistPaused}
+                    onToggleWaitlistPause={handleToggleWaitlistPause}
                     onCallNow={handleCallTicketNow}
-                    onDeliver={handleDeliverFromPause}
-                    onDeleteTicket={handleDeleteTicket}
-                    selectedPendingTicketId={selectedPendingTicketId}
-                    onSelectPendingTicket={setSelectedPendingTicketId}
-                    onAddDirectTicket={handleAddDirectPendingTicket}
-                    pendingSelectedColor={appConfig.pendingSelectedColor}
+                    onTogglePriority={handleTogglePriority}
                   />
                 </div>
 
-                {/* Right: Missing queue manager */}
-                <div className="lg:col-span-2 h-full">
-                  <MissingList
-                    tickets={tickets.filter((t) => t.status === 'missing')}
-                    onSendToActive={handleActivateFromMissing}
-                    onReturnToWaiting={handleReturnToWaitingFromMissing}
+                {/* COLUMNA 2 (Centro - Héroe): TICKET ACTIVO GIGANTE + PEDIDOS LISTOS */}
+                <div className="lg:col-span-5 space-y-4">
+                  {/* Ticket Activo Héroe Prominente */}
+                  <ActiveTicket
+                    activeTicket={activeTicket}
+                    announcementCount={announcementCount}
+                    onSpeakActive={handleRepeatCall}
+                    onMarkDelivered={handleMarkDelivered}
+                    onReturnToWaiting={handleReturnToWaiting}
+                    onMarkMissing={handleMarkMissing}
+                    onCallNext={handleCallNext}
+                    nextTicketNumber={nextTicketNumber}
+                    waitingCount={waitingTickets.length}
+                    activeGlowColor={appConfig.activeGlowColor}
                     onDeleteTicket={handleDeleteTicket}
-                    selectedMissingTicketId={selectedMissingTicketId}
-                    onSelectMissingTicket={setSelectedMissingTicketId}
+                  />
+
+                  {/* Pedidos Listos Compacto en Filas */}
+                  <ReadyList
+                    tickets={tickets.filter((t) => t.status === 'active')}
+                    onDeliver={handleMarkDelivered}
+                    onCallNow={handleCallTicketNow}
+                    onReturnToWaiting={handleReturnToWaiting}
+                    onDeleteTicket={handleDeleteTicket}
+                    activeGlowColor={appConfig.activeGlowColor}
+                    selectedReadyTicketId={selectedReadyTicketId}
+                    onSelectReadyTicket={setSelectedReadyTicketId}
+                  />
+                </div>
+
+                {/* COLUMNA 3 (Derecha): ESCÁNER OCR WHATSAPP WEB + IA OCR + TV STATUS */}
+                <div className="lg:col-span-4 space-y-4">
+                  {/* Escáner OCR Compacto */}
+                  <CameraOCR
+                    onAddTicket={handleAddTicket}
+                    existingTicketNumbers={new Set(tickets.map((t) => t.number))}
+                    maxTicketsSimultaneous={appConfig.maxOcrSimultaneous}
+                    isOcrPausedProps={isOcrPaused}
+                    onToggleOcrPauseProps={setIsOcrPaused}
+                    isEmbeddedMain={true}
+                    onOpenFullOcrTab={() => setActiveTab('ocr')}
+                  />
+
+                  {/* Tarjeta IA OCR Autónoma */}
+                  <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
+                          <Brain size={16} />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider">IA OCR AUTÓNOMA</h4>
+                          <p className="text-[10px] text-slate-400">Motor de aprendizaje continuo</p>
+                        </div>
+                      </div>
+                      <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Aprendizaje: Activo
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
+                        <span className="text-[9px] text-slate-500 block uppercase">Tickets aprendidos</span>
+                        <span className="text-indigo-300 font-bold">5420</span>
+                      </div>
+                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
+                        <span className="text-[9px] text-slate-500 block uppercase">Correcciones</span>
+                        <span className="text-amber-400 font-bold">31</span>
+                      </div>
+                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
+                        <span className="text-[9px] text-slate-500 block uppercase">Precisión</span>
+                        <span className="text-emerald-400 font-bold">99.7%</span>
+                      </div>
+                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
+                        <span className="text-[9px] text-slate-500 block uppercase">Velocidad</span>
+                        <span className="text-emerald-300 font-bold">1.3 t/seg</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Tarjeta TV Status & Sincronización */}
+                  <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
+                          <Tv size={16} />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-100">Pantalla TV Pública</h4>
+                          <p className="text-[10px] text-slate-400">Sincronización directa sin recargar</p>
+                        </div>
+                      </div>
+                      <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        🟢 TV CONECTADA
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs font-mono bg-slate-950 p-2.5 rounded-xl border border-slate-850">
+                      <div>
+                        <span className="text-[9px] text-slate-500 block uppercase">Flujo OCR → TV</span>
+                        <span className="text-emerald-400 font-bold">Listos (Directo)</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[9px] text-slate-500 block uppercase">Estado Cola</span>
+                        <span className="text-indigo-300 font-bold">Sincronizada</span>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => setActiveTab('tv_view')}
+                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
+                    >
+                      <Tv size={14} />
+                      <span>Abrir Pantalla TV</span>
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          )}
+
+            {/* VISTA 2: PANTALLA TV COMPLETA */}
+            {activeTab === 'tv_view' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center bg-slate-900 p-3 rounded-2xl border border-slate-800">
+                  <span className="text-xs font-bold text-slate-300">Vista previa de Pantalla TV pública</span>
+                  <button
+                    onClick={() => setActiveTab('board')}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    ← Volver al Panel
+                  </button>
+                </div>
+                <div className="aspect-video w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl">
+                  <PublicDisplayView
+                    activeTicket={activeTicket}
+                    tickets={tickets}
+                    pairingStatus={pairingStatus}
+                    serverIP={serverIP}
+                    appConfig={appConfig}
+                    onSelectMode={(mode) => handleSelectMode(mode)}
+                    onMediaMissing={handleMediaMissing}
+                    syncVersion={syncVersion}
+                    lastSyncTime={lastSyncTime}
+                    lastLatency={lastLatency}
+                    lastReceivedEvent={lastReceivedEvent}
                   />
                 </div>
               </div>
             )}
 
+            {/* VISTA 3: ESCÁNER OCR MODO COMPLETO */}
             {activeTab === 'ocr' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                 <div className="lg:col-span-8">
@@ -1791,7 +3459,6 @@ export default function App() {
                   />
                 </div>
                 <div className="lg:col-span-4 space-y-6">
-                  {/* Informative instructions sidebar */}
                   <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4">
                     <h3 className="font-bold text-slate-200 flex items-center gap-2 text-sm uppercase tracking-wider text-indigo-400">
                       <AlertCircle size={16} />
@@ -1799,29 +3466,15 @@ export default function App() {
                     </h3>
                     <ul className="text-xs text-slate-400 space-y-3 leading-relaxed list-disc list-inside">
                       <li>El escáner analiza la imagen en busca de números grandes de ticket de 1-3 dígitos.</li>
-                      <li>Ignora automáticamente fechas (dd/mm/aaaa), importes, monedas, números de teléfono o IVA.</li>
-                      <li>Evita duplicados: los tickets ya activos o en lista de espera se ignorarán automáticamente.</li>
-                      <li>Utiliza el <strong className="text-slate-300">Simulador</strong> si estás probando la app en una pantalla sin tickets físicos.</li>
+                      <li>Ignora automáticamente fechas, importes, monedas y teléfonos.</li>
+                      <li>Evita duplicados automáticamente.</li>
                     </ul>
-                  </div>
-
-                  {/* Live Mini status */}
-                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between">
-                    <div>
-                      <h4 className="text-xs text-slate-400">Cola actual</h4>
-                      <p className="text-xl font-bold font-mono text-white mt-0.5">{waitingTickets.length} esperando</p>
-                    </div>
-                    <button
-                      onClick={() => setActiveTab('board')}
-                      className="px-3.5 py-1.5 bg-indigo-950 hover:bg-indigo-900 border border-indigo-900 text-indigo-300 rounded-lg text-xs font-semibold cursor-pointer"
-                    >
-                      Ver cola
-                    </button>
                   </div>
                 </div>
               </div>
             )}
 
+            {/* VISTA 4: HISTORIAL */}
             {activeTab === 'history' && (
               <HistoryPanel
                 tickets={tickets}
@@ -1830,10 +3483,12 @@ export default function App() {
               />
             )}
 
+            {/* VISTA 5: ESTADÍSTICAS */}
             {activeTab === 'stats' && (
               <StatisticsPanel tickets={tickets} activeTicket={activeTicket} />
             )}
 
+            {/* VISTA 6: CONFIGURACIÓN PANTALLA COMPLETA */}
             {activeTab === 'settings' && (
               <SettingsPanel
                 voiceSettings={voiceSettings}
@@ -1844,32 +3499,33 @@ export default function App() {
                 onSaveShortcutConfig={handleSaveShortcutConfig}
                 onSaveAppConfig={handleSaveAppConfig}
                 onSaveMusicConfig={handleSaveMusicConfig}
+                tickets={tickets}
+                onImportBackup={handleImportBackup}
               />
             )}
 
+            {/* VISTA 7: DISPOSITIVOS */}
             {activeTab === 'devices' && (
               <DevicesPanel
                 deviceMode={deviceMode}
+                clientRole={clientRole}
                 pairingCode={pairingCode}
                 pairingStatus={pairingStatus}
                 serverIP={serverIP}
                 deviceName={deviceName}
                 connectedClients={connectedClients}
                 onSelectMode={handleSelectMode}
+                onSetClientRole={handleSetClientRole}
                 onSetDeviceName={handleSetDeviceName}
                 onSetServerIP={handleSetServerIP}
                 onStartPairing={handleStartPairing}
                 onRenameClient={handleRenameClient}
                 onRemoveClient={handleRemoveClient}
+                onBlockClient={handleBlockDevice}
+                onUnblockClient={handleUnblockDevice}
                 onDisconnect={handleDisconnect}
-              />
-            )}
-
-            {/* Persistent Background Music Integrated Player across all tabs */}
-            {musicConfig.enabled && musicConfig.integratedEnabled && (
-              <BackgroundMusicPlayer
-                musicConfig={musicConfig}
-                onSaveMusicConfig={handleSaveMusicConfig}
+                availableRooms={availableRooms}
+                lastConnectionError={lastConnectionError}
               />
             )}
 
@@ -1877,12 +3533,78 @@ export default function App() {
         )}
       </main>
 
+      {/* MODAL DE CONFIGURACIÓN GENERAL */}
+      {isSettingsModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden shadow-2xl relative">
+            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950">
+              <div className="flex items-center gap-2">
+                <SettingsIcon size={18} className="text-indigo-400" />
+                <h3 className="font-bold text-slate-100 text-sm">Configuración del Sistema</h3>
+              </div>
+              <button
+                onClick={() => setIsSettingsModalOpen(false)}
+                className="p-1.5 bg-slate-850 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl transition-all cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <SettingsPanel
+                voiceSettings={voiceSettings}
+                shortcutConfig={shortcutConfig}
+                appConfig={appConfig}
+                musicConfig={musicConfig}
+                onSaveVoiceSettings={handleSaveVoiceSettings}
+                onSaveShortcutConfig={handleSaveShortcutConfig}
+                onSaveAppConfig={handleSaveAppConfig}
+                onSaveMusicConfig={handleSaveMusicConfig}
+                tickets={tickets}
+                onImportBackup={handleImportBackup}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE MÚSICA FLOTANTE */}
+      {isMusicModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden relative space-y-4 p-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Music size={18} className="text-emerald-400 animate-pulse" />
+                <h3 className="font-bold text-slate-100 text-sm">Panel Flotante de Música Ambient</h3>
+              </div>
+              <button
+                onClick={() => setIsMusicModalOpen(false)}
+                className="p-1.5 bg-slate-850 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl transition-all cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <BackgroundMusicPlayer
+              musicConfig={musicConfig}
+              onSaveMusicConfig={handleSaveMusicConfig}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Persistent Background Music Integrated Player across all tabs */}
+      {musicConfig.enabled && musicConfig.integratedEnabled && (
+        <BackgroundMusicPlayer
+          musicConfig={musicConfig}
+          onSaveMusicConfig={handleSaveMusicConfig}
+        />
+      )}
+
 
 
       {/* Subtle Footer bar */}
       <footer className="border-t border-slate-900 bg-slate-950 py-4 mt-8">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-slate-600 font-mono">
-          <span>Gestor de Tickets para Restaurante © 2026</span>
+          <span>Gestor y Pantalla de Tickets de Restaurante © 2026</span>
           <div className="flex gap-4">
             <span>IndexedDB activo</span>
             <span>Web Speech TTS</span>
@@ -1914,6 +3636,162 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Floating Config Saved Toast */}
+      <AnimatePresence>
+        {configSavedToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.95 }}
+            className="fixed bottom-6 right-6 z-[99999] bg-emerald-900/90 backdrop-blur-md border border-emerald-500/30 text-emerald-100 py-3 px-5 rounded-2xl shadow-2xl flex items-center gap-2.5 font-sans"
+          >
+            <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
+              <Check size={12} />
+            </div>
+            <span className="text-xs font-bold">{configSavedToast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Handshake/Authorization request Modal overlay (PC Server view only) */}
+      {deviceMode === 'server' && pendingAuthRequests.length > 0 && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center z-[99999] px-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5"
+          >
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl">
+                <Smartphone className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-slate-100">Solicitud de Conexión</h3>
+                <p className="text-xs text-slate-400 font-sans">
+                  Un nuevo dispositivo de tu red local está intentando vincularse.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 font-mono text-xs space-y-2">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Nombre:</span>
+                <span className="text-slate-200 font-bold">{pendingAuthRequests[0].deviceName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Tipo de rol:</span>
+                <span className="text-indigo-400 font-bold uppercase">{pendingAuthRequests[0].deviceType || 'Tablet'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-mono text-[10px]">ID único:</span>
+                <span className="text-slate-600 font-mono text-[10px] truncate max-w-[180px]">{pendingAuthRequests[0].deviceId}</span>
+              </div>
+            </div>
+
+            {/* Checkbox to remember device */}
+            <label className="flex items-center gap-3 cursor-pointer select-none text-xs text-slate-300 bg-slate-950/40 p-3 rounded-xl border border-slate-800/50 hover:bg-slate-950/80 transition-colors">
+              <input
+                type="checkbox"
+                id="remember-device-checkbox"
+                defaultChecked={true}
+                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 bg-slate-900 border-slate-800 cursor-pointer"
+              />
+              <span className="font-semibold">Recordar este dispositivo en el futuro</span>
+            </label>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => handleRejectDevice(
+                  pendingAuthRequests[0].deviceId,
+                  pendingAuthRequests[0].deviceName,
+                  pendingAuthRequests[0].deviceType
+                )}
+                className="flex-1 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 rounded-xl text-xs font-bold transition-all cursor-pointer text-center"
+              >
+                Rechazar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const chk = document.getElementById('remember-device-checkbox') as HTMLInputElement;
+                  handleApproveDevice(
+                    pendingAuthRequests[0].deviceId,
+                    pendingAuthRequests[0].deviceName,
+                    pendingAuthRequests[0].deviceType,
+                    chk ? chk.checked : true
+                  );
+                }}
+                className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-lg shadow-indigo-600/10"
+              >
+                Permitir conexión
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* NAVEGACIÓN INFERIOR EXCLUSIVA PARA MÓVIL (Uso con una sola mano, área táctil >= 44px) */}
+      {isMobile && (
+        <nav className="fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 border-t border-slate-800 backdrop-blur-xl p-1 shadow-2xl flex items-center justify-around pb-safe transition-colors duration-300">
+          <button
+            onClick={() => setActiveTab('board')}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+              activeTab === 'board'
+                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <LayoutGrid size={18} />
+            <span className="text-[10px] mt-0.5">Tablero</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('tv_view')}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+              activeTab === 'tv_view'
+                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Tv size={18} />
+            <span className="text-[10px] mt-0.5">TV</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+              activeTab === 'history'
+                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <History size={18} />
+            <span className="text-[10px] mt-0.5">Historial</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('stats')}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+              activeTab === 'stats'
+                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <BarChart2 size={18} />
+            <span className="text-[10px] mt-0.5">Stats</span>
+          </button>
+
+          <button
+            onClick={() => setIsSettingsModalOpen(true)}
+            className="flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
+          >
+            <SettingsIcon size={18} />
+            <span className="text-[10px] mt-0.5">Ajustes</span>
+          </button>
+        </nav>
+      )}
     </div>
   );
 }
