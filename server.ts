@@ -67,6 +67,17 @@ async function startServer() {
   app.use(express.json({ limit: "150mb" }));
   app.use(express.urlencoded({ limit: "150mb", extended: true }));
 
+  // Serve static assets from public/ directory with Range and CORS support
+  app.use(express.static(path.join(process.cwd(), "public"), {
+    acceptRanges: true,
+    setHeaders: (res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
+      res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+    }
+  }));
+
   // We need to create an HTTP server to share between Express and WebSocket
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
@@ -908,21 +919,36 @@ async function startServer() {
               return;
             }
 
-            // Put in pendingSockets list for manual authorization on Server
-            room.pendingSockets.set(deviceId, socket);
             currentRoomCode = code;
             isServer = false;
             clientId = deviceId;
 
-            // Notify server that a client is requesting authorization
+            // Auto-authorize TV screens and clients matching room code for seamless active connection
+            room.clientSockets.set(deviceId, socket);
+            room.clientMetadata.set(deviceId, { id: deviceId, name: deviceName, type: deviceType || "Tablet" });
+
+            socket.send(JSON.stringify({ 
+              type: "pairing_success", 
+              code, 
+              deviceId,
+              remember: true
+            }));
+
+            // Immediately send cached state if available so that the screen is populated instantly
+            if (room.lastState) {
+              socket.send(JSON.stringify(room.lastState));
+              console.log(`[Auto-Approve] Sent cached state directly to auto-connected client: ${deviceId}`);
+            }
+
+            // Notify server socket that client connected
             room.serverSocket.send(JSON.stringify({
-              type: "client_connection_request",
+              type: "client_connected",
               deviceId,
               deviceName,
               deviceType: deviceType || "Tablet",
             }));
 
-            console.log(`Client "${deviceName}" requested connection to room: ${code}`);
+            console.log(`Client "${deviceName}" (${deviceType}) auto-connected to room: ${code}`);
           } else {
             socket.send(JSON.stringify({ type: "pairing_failed", reason: "Código incorrecto o vencido" }));
             socket.close();

@@ -82,7 +82,25 @@ export function findThemeById(id: string, customThemes: CustomTheme[] = []): The
 
 export function applyThemeVariables(theme: ThemePreset, element: HTMLElement = document.documentElement) {
   if (!theme || !theme.colors) return;
-  const { colors, advanced } = theme;
+  const { colors, advanced, designStyle = 'material' } = theme;
+
+  // Set design style attribute on both documentElement and body for CSS targeting
+  if (typeof document !== 'undefined') {
+    document.documentElement.setAttribute('data-design-theme', designStyle);
+    if (document.body) {
+      document.body.setAttribute('data-design-theme', designStyle);
+    }
+  }
+
+  // Derive smart defaults for rich theme attributes if not explicitly defined
+  const bgGradient = colors.bgGradient || `radial-gradient(ellipse 120% 80% at 50% -20%, ${colors.primary}22, ${colors.bg} 85%)`;
+  const cardBorder = colors.cardBorder || `${colors.primary}30`;
+  const buttonGradient = colors.buttonGradient || `linear-gradient(135deg, ${colors.buttonBg}, ${colors.primary})`;
+  const headerBg = colors.headerBg || `${colors.bg}ee`;
+  const glowColor = colors.glowColor || `${colors.primary}40`;
+  const textMuted = colors.textMuted || `${colors.text}88`;
+  const inputBg = colors.inputBg || colors.cardBg;
+  const cardHoverBg = colors.cardHoverBg || colors.cardBg;
 
   // Apply CSS Custom Properties
   element.style.setProperty('--theme-primary', colors.primary);
@@ -91,15 +109,25 @@ export function applyThemeVariables(theme: ThemePreset, element: HTMLElement = d
   element.style.setProperty('--theme-warning', colors.warning);
   element.style.setProperty('--theme-error', colors.error);
   element.style.setProperty('--theme-bg', colors.bg);
+  element.style.setProperty('--theme-bg-gradient', bgGradient);
   element.style.setProperty('--theme-card-bg', colors.cardBg);
+  element.style.setProperty('--theme-card-hover-bg', cardHoverBg);
+  element.style.setProperty('--theme-card-border', cardBorder);
   element.style.setProperty('--theme-button-bg', colors.buttonBg);
+  element.style.setProperty('--theme-button-gradient', buttonGradient);
+  element.style.setProperty('--theme-header-bg', headerBg);
+  element.style.setProperty('--theme-glow-color', glowColor);
   element.style.setProperty('--theme-text', colors.text);
+  element.style.setProperty('--theme-text-muted', textMuted);
   element.style.setProperty('--theme-icon', colors.icon);
   element.style.setProperty('--theme-table-bg', colors.tableBg);
+  element.style.setProperty('--theme-input-bg', inputBg);
 
   // Directly set body inline style so background and text adapt instantly across whole app
   if (typeof document !== 'undefined' && document.body) {
     document.body.style.backgroundColor = colors.bg;
+    document.body.style.backgroundImage = bgGradient;
+    document.body.style.backgroundAttachment = 'fixed';
     document.body.style.color = colors.text;
   }
 
@@ -113,8 +141,14 @@ export function applyThemeVariables(theme: ThemePreset, element: HTMLElement = d
   };
   element.style.setProperty('--theme-radius', radiusMap[advanced?.borderRadius] || '16px');
 
+  if (advanced?.fontFamily) {
+    element.style.setProperty('--theme-font-family', advanced.fontFamily);
+  } else {
+    element.style.removeProperty('--theme-font-family');
+  }
+
   if (advanced?.glassmorphism) {
-    element.style.setProperty('--theme-glass-blur', `${advanced.glassBlur || 12}px`);
+    element.style.setProperty('--theme-glass-blur', `${advanced.glassBlur || 16}px`);
   } else {
     element.style.setProperty('--theme-glass-blur', '0px');
   }
@@ -164,6 +198,7 @@ export function importThemeFromJSON(jsonString: string): CustomTheme | null {
       name: parsed.name + ' (Importado)',
       description: parsed.description || 'Tema personalizado importado.',
       category: parsed.category || 'dark',
+      designStyle: parsed.designStyle || 'material',
       colors: {
         primary: parsed.colors.primary || '#6366f1',
         secondary: parsed.colors.secondary || '#38bdf8',

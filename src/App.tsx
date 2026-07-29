@@ -12,6 +12,7 @@ import {
   dbSaveSettings,
 } from './utils/db';
 import { speakText, playNotificationSound, triggerVibration, formatAnnouncementText } from './utils/audio';
+import { buildWsUrl, buildApiUrl } from './utils/urlHelper';
 
 import ManualInput from './components/ManualInput';
 import ActiveTicket from './components/ActiveTicket';
@@ -171,11 +172,24 @@ export default function App() {
     return localStorage.getItem('isAutoCallActive') !== 'false'; // defaults to true
   });
 
+  // Smart TV & URL query parameter auto-detection
+  const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const urlMode = searchParams?.get('mode');
+  const urlRole = searchParams?.get('role');
+  const urlCode = searchParams?.get('code');
+  const isTvUA = typeof navigator !== 'undefined' && /Tizen|SmartTV|SamsungBrowser|HbbTV|WebOS/i.test(navigator.userAgent);
+
   // Client-Server and WebSocket states
   const [deviceMode, setDeviceMode] = useState<'local' | 'server' | 'client'>(() => {
+    if (urlMode === 'public_display' || urlMode === 'client' || urlRole === 'pantalla' || isTvUA) {
+      return 'client';
+    }
     return (localStorage.getItem('deviceMode') as any) || 'local';
   });
   const [clientRole, setClientRole] = useState<'controller' | 'pantalla'>(() => {
+    if (urlRole === 'pantalla' || urlMode === 'public_display' || isTvUA) {
+      return 'pantalla';
+    }
     return (localStorage.getItem('clientRole') as any) || 'controller';
   });
   const [forcePCManualMode, setForcePCManualMode] = useState<boolean>(false);
@@ -190,6 +204,7 @@ export default function App() {
   };
 
   const [pairingCode, setPairingCode] = useState<string>(() => {
+    if (urlCode) return urlCode;
     return localStorage.getItem('pairedCode') || '';
   });
   const [pairingStatus, setPairingStatus] = useState<'unpaired' | 'pairing' | 'paired' | 'failed' | 'searching'>('unpaired');
@@ -537,8 +552,51 @@ export default function App() {
         }
       }
 
-      // Also upload standby images if they exist
+      // Upload background video playlist items if present
       const savedAppConfig = await dbGetSettings<AppConfig>('app_config');
+      if (savedAppConfig && savedAppConfig.publicDisplayBgVideos && Array.isArray(savedAppConfig.publicDisplayBgVideos)) {
+        for (const vid of savedAppConfig.publicDisplayBgVideos) {
+          const key = `bg_video_${vid.id}`;
+          const stored = await dbGetSettings<string | Blob>('media_' + key);
+          if (stored) {
+            let blobToUpload: Blob | null = null;
+            let mimeType: string = '';
+
+            if (stored instanceof Blob) {
+              blobToUpload = stored;
+              mimeType = stored.type;
+            } else if (typeof stored === 'string') {
+              if (stored.startsWith('data:')) {
+                if (stored.length > 10 * 1024 * 1024) continue;
+                try {
+                  const parts = stored.split(',');
+                  const byteString = atob(parts[1]);
+                  mimeType = parts[0].split(':')[1].split(';')[0];
+                  const ab = new ArrayBuffer(byteString.length);
+                  const ia = new Uint8Array(ab);
+                  for (let i = 0; i < byteString.length; i++) {
+                    ia[i] = byteString.charCodeAt(i);
+                  }
+                  blobToUpload = new Blob([ab], { type: mimeType });
+                } catch (e) {
+                  console.error('Error converting playlist video to Blob for upload:', e);
+                }
+              }
+            }
+
+            if (blobToUpload) {
+              console.log(`[Media Sync] Uploading background playlist video '${vid.id}' to HTTP server...`);
+              await fetch(`/api/media/${roomCode}/${key}`, {
+                method: 'POST',
+                headers: { 'Content-Type': mimeType || 'video/mp4' },
+                body: blobToUpload,
+              });
+            }
+          }
+        }
+      }
+
+      // Also upload standby images if they exist
       if (savedAppConfig && savedAppConfig.publicDisplayStandbyImages && Array.isArray(savedAppConfig.publicDisplayStandbyImages)) {
         for (const img of savedAppConfig.publicDisplayStandbyImages) {
           const key = `standby_image_${img.id}`;
@@ -613,9 +671,8 @@ export default function App() {
       setPairingCode(code);
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socketHost = mode === 'server' ? window.location.host : ip;
-    const wsUrl = `${protocol}//${socketHost}`;
+    const wsUrl = buildWsUrl(socketHost);
 
     console.log(`Connecting to WebSocket at ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
@@ -724,6 +781,10 @@ export default function App() {
 
         else if (data.type === 'client_connection_request') {
           const existingDevice = authorizedDevicesRef.current.find(d => d.id === data.deviceId);
+          const isPublicDisplay = data.deviceType === 'Pantalla Pública' || 
+                                  data.deviceType === 'pantalla' || 
+                                  (data.deviceName && (data.deviceName.toLowerCase().includes('pantalla') || data.deviceName.toLowerCase().includes('tv')));
+
           if (existingDevice) {
             if (existingDevice.status === 'blocked') {
               ws.send(JSON.stringify({
@@ -749,6 +810,31 @@ export default function App() {
                 ...d,
                 lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
               } : d));
+            }
+          } else if (isPublicDisplay || appConfigRef.current?.autoApprovePublicDisplays) {
+            // Auto-authorize Public Display TV screens so they connect instantly without manual popup!
+            const newDevice = {
+              id: data.deviceId,
+              name: data.deviceName || 'Pantalla TV Pública',
+              type: data.deviceType || 'Pantalla Pública',
+              status: 'authorized' as const,
+              remember: true,
+              lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+            };
+            setAuthorizedDevices(prev => {
+              if (prev.some(d => d.id === data.deviceId)) return prev;
+              return [...prev, newDevice];
+            });
+            ws.send(JSON.stringify({
+              type: 'auth_decision',
+              deviceId: data.deviceId,
+              approved: true,
+              remember: true,
+              deviceName: data.deviceName,
+              deviceType: data.deviceType || 'Pantalla Pública',
+            }));
+            if (mode === 'server') {
+              addServerLog(`Pantalla Pública "${data.deviceName}" autorizada y vinculada automáticamente.`, 'success');
             }
           } else {
             setPendingAuthRequests(prev => {
@@ -832,8 +918,11 @@ export default function App() {
 
         else if (data.type === 'sync_state') {
           if (mode === 'client') {
+            const prevActiveId = activeTicketRef.current?.id;
+            const newActive = data.activeTicket;
+
             setTickets(data.tickets);
-            setActiveTicket(data.activeTicket);
+            setActiveTicket(newActive);
             setAnnouncementCount(data.announcementCount);
             setAppConfig(data.appConfig);
             setVoiceSettings(data.voiceSettings);
@@ -844,6 +933,18 @@ export default function App() {
             setSyncVersion(data.syncVersion ?? 0);
             if (data.timestamp) {
               setLastLatency(Math.max(0, Date.now() - data.timestamp));
+            }
+
+            // Play loud bell chime and vocalize new ticket when active ticket changes on TV / client
+            if (newActive && newActive.id !== prevActiveId) {
+              const vs = data.voiceSettings || voiceSettingsRef.current;
+              if (vs.soundEnabled !== false) {
+                playNotificationSound();
+              }
+              if (vs.voiceEnabled !== false) {
+                const msgText = formatAnnouncementText(newActive.number, vs, data.announcementCount || 1);
+                speakText(msgText, vs);
+              }
             }
 
             // Persist locally for TV recovery!
@@ -935,19 +1036,18 @@ export default function App() {
         setLastConnectionError('Conexión cerrada.');
       }
       
-      // Auto reconnect with progressive backoff (1s, 2s, 5s, 10s, 15s)
+      // Auto reconnect with continuous 1-second frequency for screens & clients
       reconnectAttemptsRef.current += 1;
-      const delays = [1000, 2000, 5000, 10000, 15000];
-      const delayIndex = Math.min(reconnectAttemptsRef.current - 1, delays.length - 1);
-      const nextDelay = delays[delayIndex];
+      const isClientOrTVMode = mode === 'client' || clientRole === 'pantalla' || activeTab === 'tv_view';
+      const nextDelay = isClientOrTVMode ? 1000 : Math.min(reconnectAttemptsRef.current * 1000, 5000);
 
       console.log(`[WS Reconnect] Lost connection. Reconnecting in ${nextDelay / 1000}s (Attempt ${reconnectAttemptsRef.current})...`);
 
       reconnectTimeoutRef.current = setTimeout(() => {
-        const m = localStorage.getItem('deviceMode');
+        const m = localStorage.getItem('deviceMode') || (activeTab === 'tv_view' ? 'client' : 'local');
         if (m && m !== 'local') {
-          const c = localStorage.getItem('pairedCode') || '';
-          const i = localStorage.getItem('serverIP') || window.location.host;
+          const c = localStorage.getItem('pairedCode') || pairingCode || '';
+          const i = localStorage.getItem('serverIP') || serverIP || window.location.host;
           connectWebSocket(m as 'server' | 'client', c, i);
         }
       }, nextDelay);
@@ -957,6 +1057,11 @@ export default function App() {
       console.warn('WebSocket connection error (this is normal during setup or local scanning):', err);
       setLastConnectionError('No se pudo establecer conexión. Verifique la IP o el código de sala.');
       setPairingStatus('failed');
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      } catch (e) {}
     };
   };
 
@@ -1118,6 +1223,9 @@ export default function App() {
     if (mode === 'local') {
       setDeviceMode('local');
       localStorage.setItem('deviceMode', 'local');
+      setClientRole('controller');
+      localStorage.setItem('clientRole', 'controller');
+      setActiveTab('board');
       setPairingStatus('unpaired');
       setPairingCode('');
       setConnectedClients([]);
@@ -1155,13 +1263,26 @@ export default function App() {
       localStorage.setItem('clientRole', 'pantalla');
       setTickets([]);
       setActiveTicket(null);
-      setActiveTab('devices');
+      setActiveTab('tv_view');
       const savedCode = localStorage.getItem('pairedCode') || pairingCode || '';
       const savedIP = localStorage.getItem('serverIP') || serverIP || window.location.host;
       if (savedCode) {
         connectWebSocket('client', savedCode, savedIP);
       } else {
-        setPairingStatus('unpaired');
+        // Query rooms immediately for TV screen auto-connection
+        fetch(buildApiUrl(savedIP, '/api/rooms'))
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data && data.rooms && data.rooms.length > 0) {
+              const discovered = data.rooms[0].code;
+              setPairingCode(discovered);
+              localStorage.setItem('pairedCode', discovered);
+              connectWebSocket('client', discovered, savedIP);
+            } else {
+              setPairingStatus('searching');
+            }
+          })
+          .catch(() => setPairingStatus('searching'));
       }
     }
   };
@@ -1289,101 +1410,133 @@ export default function App() {
     };
   }, []);
 
-  // Global Background Auto-Discovery Loop for Client Devices
+  // Bulletproof 1-Second Continuous Monitoring & Auto-Reconnect Engine for TV Screens & Clients
   useEffect(() => {
-    if (deviceMode !== 'client' || pairingStatus === 'paired') return;
+    const checkAndReconnect1s = async () => {
+      let currentMode = localStorage.getItem('deviceMode') as 'server' | 'client' | 'local' | null;
+      if (!currentMode) {
+        currentMode = deviceMode;
+      }
 
-    const fetchRooms = async () => {
-      try {
-        const res = await fetch('/api/rooms');
-        if (res.ok) {
-          const data = await res.json();
-          const roomsList = data.rooms || [];
-          setAvailableRooms(roomsList);
+      // Enforce client mode only when explicitly in client mode with pantalla role
+      if (currentMode === 'client' && clientRole === 'pantalla') {
+        if (deviceMode !== 'client') {
+          setDeviceMode('client');
+          localStorage.setItem('deviceMode', 'client');
+        }
+      }
 
-          // Auto-connect if exactly one room is available and we are currently unpaired or if a different room code is discovered
-          if (roomsList.length === 1) {
-            const discoveredRoom = roomsList[0];
-            const isDifferentCode = discoveredRoom.code !== pairingCode;
-            const canAutoConnect = pairingStatus === 'unpaired' || (pairingStatus === 'failed' && isDifferentCode);
-            
-            if (canAutoConnect) {
-              console.log(`Global Auto-discovery: Connecting to room ${discoveredRoom.code}`);
-              handleStartPairing(discoveredRoom.code);
+      if (!currentMode || currentMode === 'local') return;
+
+      const socket = socketRef.current;
+      const isSocketOpen = socket && socket.readyState === WebSocket.OPEN;
+
+      // 1. Check for stale / half-open socket (if open but no message received in 20s)
+      if (isSocketOpen) {
+        const idleTime = Date.now() - lastMessageReceivedTimeRef.current;
+        if (idleTime > 20000) {
+          console.warn('[1s Monitor] Heartbeat timeout (no message in 20s). Force closing stale socket...');
+          try {
+            socket.close();
+          } catch (e) {}
+        }
+        return; // Connected and healthy!
+      }
+
+      // 2. If socket is connecting, check if stuck for > 4s
+      if (socket && socket.readyState === WebSocket.CONNECTING) {
+        const connectingTime = Date.now() - lastMessageReceivedTimeRef.current;
+        if (connectingTime > 4000) {
+          console.warn('[1s Monitor] Connection attempt stuck in CONNECTING for >4s. Resetting...');
+          try {
+            socket.close();
+          } catch (e) {}
+        }
+        return;
+      }
+
+      // 3. Socket is closed, missing, or failed -> TRIGGER RECONNECT IMMEDIATELY!
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        let code = localStorage.getItem('pairedCode') || pairingCode || '';
+        let ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
+
+        // If code is empty, attempt room auto-discovery from /api/rooms
+        if (!code) {
+          try {
+            const res = await fetch(buildApiUrl(ip, '/api/rooms'));
+            if (res.ok) {
+              const data = await res.json();
+              const roomsList = data.rooms || [];
+              setAvailableRooms(roomsList);
+              if (roomsList.length > 0) {
+                code = roomsList[0].code;
+                console.log(`[1s Auto-Discovery] Found room ${code}. Saving and connecting...`);
+                setPairingCode(code);
+                localStorage.setItem('pairedCode', code);
+              }
             }
+          } catch (err) {
+            console.warn('[1s Auto-Discovery] Room fetch failed:', err);
           }
         }
-      } catch (err) {
-        console.warn('Error fetching available rooms in global background thread:', err);
-      }
-    };
 
-    fetchRooms();
-    const interval = setInterval(fetchRooms, 2500);
-    return () => clearInterval(interval);
-  }, [deviceMode, pairingStatus, pairingCode]);
-
-  // Bulletproof auto-reconnect on visibility/focus/online events and background heartbeat
-  useEffect(() => {
-    const handleCheckAndReconnect = () => {
-      const mode = localStorage.getItem('deviceMode');
-      if (mode && mode !== 'local') {
-        const socket = socketRef.current;
-        if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-          console.log('Device woke up, became visible, or regained focus. Reconnecting socket immediately...');
-          const code = localStorage.getItem('pairedCode') || '';
-          const ip = localStorage.getItem('serverIP') || window.location.host;
-          connectWebSocket(mode as 'server' | 'client', code, ip);
-          if (mode === 'server') {
-            addServerLog("Se detectó actividad/enfoque de pantalla. Verificando red local...", "info");
-          }
+        if (code) {
+          console.log(`[1s Reconnect Engine] Attempting connection to ${ip} with room code ${code}...`);
+          connectWebSocket(currentMode, code, ip);
+        } else if (currentMode === 'server') {
+          connectWebSocket('server', code, ip);
+        } else {
+          console.log(`[1s Reconnect Engine] Waiting for room code or auto-discovery...`);
         }
       }
     };
 
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        handleCheckAndReconnect();
-      }
+    checkAndReconnect1s();
+    const interval = setInterval(checkAndReconnect1s, 1000); // Continuous 1-second check!
+
+    const handleInstantReconnect = () => {
+      checkAndReconnect1s();
     };
 
-    window.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('focus', handleCheckAndReconnect);
-    window.addEventListener('online', handleCheckAndReconnect);
-
-    // Continuous 1.5-second background monitoring check
-    const interval = setInterval(() => {
-      const mode = localStorage.getItem('deviceMode');
-      if (mode && mode !== 'local') {
-        const socket = socketRef.current;
-        
-        // If connected, check for dead silent connections (half-open sockets)
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          const idleTime = Date.now() - lastMessageReceivedTimeRef.current;
-          if (idleTime > 25000) {
-            console.warn('Heartbeat: No message received in 25s. Socket is dead. Force closing...');
-            try {
-              socket.close();
-            } catch (e) {}
-          }
-        }
-
-        if (!socket || socket.readyState === WebSocket.CLOSED) {
-          console.log('Heartbeat: Socket is closed or null. Triggering automatic reconnect...');
-          const code = localStorage.getItem('pairedCode') || '';
-          const ip = localStorage.getItem('serverIP') || window.location.host;
-          connectWebSocket(mode as 'server' | 'client', code, ip);
-        }
-      }
-    }, 1500);
+    window.addEventListener('visibilitychange', handleInstantReconnect);
+    window.addEventListener('focus', handleInstantReconnect);
+    window.addEventListener('online', handleInstantReconnect);
 
     return () => {
-      window.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('focus', handleCheckAndReconnect);
-      window.removeEventListener('online', handleCheckAndReconnect);
       clearInterval(interval);
+      window.removeEventListener('visibilitychange', handleInstantReconnect);
+      window.removeEventListener('focus', handleInstantReconnect);
+      window.removeEventListener('online', handleInstantReconnect);
     };
-  }, []);
+  }, [deviceMode, clientRole, activeTab, pairingCode, serverIP]);
+
+  const handleForceReconnect = async () => {
+    console.log('[Force Reconnect] Forced reconnection requested...');
+    if (socketRef.current) {
+      try {
+        socketRef.current.close();
+      } catch (e) {}
+    }
+    let code = localStorage.getItem('pairedCode') || pairingCode || '';
+    let ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
+
+    if (!code) {
+      try {
+        const res = await fetch(buildApiUrl(ip, '/api/rooms'));
+        if (res.ok) {
+          const data = await res.json();
+          if (data.rooms && data.rooms.length > 0) {
+            code = data.rooms[0].code;
+            setPairingCode(code);
+            localStorage.setItem('pairedCode', code);
+          }
+        }
+      } catch (e) {}
+    }
+
+    const modeToUse = (deviceMode === 'local' || activeTab === 'tv_view' || clientRole === 'pantalla') ? 'client' : deviceMode;
+    connectWebSocket(modeToUse, code, ip);
+  };
 
   // Server state broadcast effect: broadcast server state updates to clients
   useEffect(() => {
@@ -2014,9 +2167,7 @@ export default function App() {
       if (voiceSettings.soundEnabled) {
         playNotificationSound();
       }
-      const msg = voiceSettings.customPhrase
-        ? voiceSettings.customPhrase.replace('{number}', normalizedNum)
-        : `Número ${normalizedNum}, pedido listo`;
+      const msg = formatAnnouncementText(normalizedNum, voiceSettings, 1);
       speakText(msg, voiceSettings);
     } else {
       // CASO 2: Ya existe un ticket activo -> Se agrega en cola a "Listos para Entregar" detrás de él
@@ -2075,9 +2226,7 @@ export default function App() {
         if (voiceSettings.soundEnabled) {
           playNotificationSound();
         }
-        const msg = voiceSettings.customPhrase
-          ? voiceSettings.customPhrase.replace('{number}', nextInLine.number)
-          : `Número ${nextInLine.number}, pedido listo`;
+        const msg = formatAnnouncementText(nextInLine.number, voiceSettings, 1);
         speakText(msg, voiceSettings);
       } else {
         const waitingList = updatedTickets.filter((t) => t.status === 'waiting');
@@ -2092,9 +2241,7 @@ export default function App() {
           if (voiceSettings.soundEnabled) {
             playNotificationSound();
           }
-          const msg = voiceSettings.customPhrase
-            ? voiceSettings.customPhrase.replace('{number}', nextWaiting.number)
-            : `Número ${nextWaiting.number}, pedido listo`;
+          const msg = formatAnnouncementText(nextWaiting.number, voiceSettings, 1);
           speakText(msg, voiceSettings);
         } else {
           setActiveTicket(null);
@@ -2752,6 +2899,24 @@ export default function App() {
       updated.publicDisplayBgVideo = 'indexeddb:bg_video';
     }
 
+    // Process bg videos list
+    if (updated.publicDisplayBgVideos && Array.isArray(updated.publicDisplayBgVideos)) {
+      const processedVideos = [];
+      for (const vid of updated.publicDisplayBgVideos) {
+        if (vid.url && vid.url.startsWith('data:')) {
+          const idbKey = `media_bg_video_${vid.id}`;
+          await dbSaveSettings(idbKey, vid.url);
+          processedVideos.push({
+            ...vid,
+            url: `indexeddb:bg_video_${vid.id}`
+          });
+        } else {
+          processedVideos.push(vid);
+        }
+      }
+      updated.publicDisplayBgVideos = processedVideos;
+    }
+
     // Process bg image
     if (updated.publicDisplayBgImage && updated.publicDisplayBgImage.startsWith('data:')) {
       await dbSaveSettings('media_bg_image', updated.publicDisplayBgImage);
@@ -2957,6 +3122,7 @@ export default function App() {
         lastSyncTime={lastSyncTime}
         lastLatency={lastLatency}
         lastReceivedEvent={lastReceivedEvent}
+        onForceReconnect={handleForceReconnect}
       />
     );
   }
@@ -2972,9 +3138,10 @@ export default function App() {
       
       {/* CABECERA FIJA SUPERIOR */}
       <header 
-        className="border-b border-slate-800/50 backdrop-blur-md sticky top-0 z-50 px-4 py-2.5 transition-colors duration-300"
+        className="border-b backdrop-blur-md sticky top-0 z-50 px-4 py-2.5 transition-colors duration-300"
         style={{
           backgroundColor: 'var(--theme-card-bg, #0f172a)',
+          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
           color: 'var(--theme-text, #f8fafc)',
         }}
       >
@@ -2986,7 +3153,7 @@ export default function App() {
               T
             </div>
             <div className="flex items-center gap-2">
-              <h1 className="text-sm font-extrabold text-white tracking-tight leading-none">
+              <h1 className="text-sm font-extrabold tracking-tight leading-none" style={{ color: 'var(--theme-text, #f8fafc)' }}>
                 Gestor de Tickets
               </h1>
               <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
@@ -2997,37 +3164,44 @@ export default function App() {
           </div>
 
           {/* Centro: Indicadores pequeños con punto verde */}
-          <div className="hidden lg:flex items-center gap-2 bg-slate-900/60 px-3 py-1 border border-slate-800/80 rounded-xl text-[10px] font-mono text-slate-300">
-            <button onClick={() => setIsOcrPaused(!isOcrPaused)} className="flex items-center gap-1 hover:text-white transition-colors cursor-pointer">
+          <div 
+            className="hidden lg:flex items-center gap-2 px-3 py-1 border rounded-xl text-[10px] font-mono transition-colors"
+            style={{
+              backgroundColor: 'var(--theme-input-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
+          >
+            <button onClick={() => setIsOcrPaused(!isOcrPaused)} className="flex items-center gap-1 hover:opacity-80 transition-opacity cursor-pointer">
               <span className={`w-1.5 h-1.5 rounded-full ${isOcrPaused ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`}></span>
               <span>OCR</span>
             </button>
-            <span className="text-slate-700">│</span>
+            <span className="opacity-40">│</span>
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
               <span>IA</span>
             </span>
-            <span className="text-slate-700">│</span>
+            <span className="opacity-40">│</span>
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
               <span>Cámara</span>
             </span>
-            <span className="text-slate-700">│</span>
+            <span className="opacity-40">│</span>
             <span className="flex items-center gap-1">
               <span className={`w-1.5 h-1.5 rounded-full ${pairingStatus === 'paired' || deviceMode === 'server' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
               <span>TV</span>
             </span>
-            <span className="text-slate-700">│</span>
-            <button onClick={() => setMusicConfig({ ...musicConfig, enabled: !musicConfig.enabled })} className="flex items-center gap-1 hover:text-white transition-colors cursor-pointer">
+            <span className="opacity-40">│</span>
+            <button onClick={() => setMusicConfig({ ...musicConfig, enabled: !musicConfig.enabled })} className="flex items-center gap-1 hover:opacity-80 transition-opacity cursor-pointer">
               <span className={`w-1.5 h-1.5 rounded-full ${musicConfig.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`}></span>
               <span>Música</span>
             </button>
-            <span className="text-slate-700">│</span>
+            <span className="opacity-40">│</span>
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
               <span>WebSocket</span>
             </span>
-            <span className="text-slate-700">│</span>
+            <span className="opacity-40">│</span>
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
               <span>Sync</span>
@@ -3038,28 +3212,52 @@ export default function App() {
           <div className="flex items-center gap-2 text-xs font-mono">
             {/* Badge de Detección de Dispositivo */}
             <span 
-              className="inline-flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg uppercase cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 border rounded-lg uppercase cursor-pointer transition-colors"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text, #f8fafc)',
+              }}
               onClick={() => setIsSettingsModalOpen(true)}
               title="Ajustes de Diseño Responsive Independiente"
             >
               {isPC && <Monitor size={13} className="text-indigo-400" />}
               {isTablet && <Tablet size={13} className="text-amber-400" />}
               {isMobile && <Smartphone size={13} className="text-emerald-400" />}
-              <span className="text-slate-200">{deviceType}</span>
+              <span>{deviceType}</span>
             </span>
 
-            <span className="text-indigo-300 font-bold px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg">
+            <span 
+              className="font-bold px-2.5 py-1 border rounded-lg"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-primary, #6366f1)',
+              }}
+            >
               {clockTime || '00:00:00'}
             </span>
 
-            <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-slate-400 bg-slate-900 px-2.5 py-1 border border-slate-800 rounded-lg">
+            <span 
+              className="hidden sm:inline-flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              }}
+            >
               <Smartphone size={12} className="text-emerald-400" />
               <span>{connectedClients.filter(c => c.connected).length || 1} Devs</span>
             </span>
 
             <button
               onClick={() => setIsSettingsModalOpen(true)}
-              className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg cursor-pointer transition-all"
+              className="p-1.5 border rounded-lg cursor-pointer transition-all hover:brightness-125"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text, #f8fafc)',
+              }}
               title="Configuración General"
             >
               <SettingsIcon size={14} />
@@ -3067,7 +3265,12 @@ export default function App() {
 
             <button
               onClick={toggleFullscreen}
-              className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg cursor-pointer transition-all"
+              className="p-1.5 border rounded-lg cursor-pointer transition-all hover:brightness-125"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text, #f8fafc)',
+              }}
               title={isFullscreen ? "Salir de pantalla completa" : "Modo Pantalla Completa"}
             >
               {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
@@ -3079,9 +3282,10 @@ export default function App() {
 
       {/* MENÚ DE COMPONENTES REDUCIDO */}
       <div 
-        className="border-b border-slate-800/50 px-4 py-2 sticky top-[49px] z-40 transition-colors duration-300"
+        className="border-b px-4 py-2 sticky top-[49px] z-40 transition-colors duration-300"
         style={{
           backgroundColor: 'var(--theme-bg, #020617)',
+          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
           color: 'var(--theme-text, #f8fafc)',
         }}
       >
@@ -3089,9 +3293,16 @@ export default function App() {
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setActiveTab('board')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeTab === 'board' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                activeTab === 'board' 
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/20' 
+                  : 'hover:brightness-110'
               }`}
+              style={activeTab !== 'board' ? {
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              } : {}}
             >
               <LayoutGrid size={14} />
               <span>Panel</span>
@@ -3099,9 +3310,16 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('tv_view')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeTab === 'tv_view' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                activeTab === 'tv_view' 
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/20' 
+                  : 'hover:brightness-110'
               }`}
+              style={activeTab !== 'tv_view' ? {
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              } : {}}
             >
               <Tv size={14} />
               <span>Pantalla TV</span>
@@ -3109,9 +3327,16 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('history')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeTab === 'history' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                activeTab === 'history' 
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/20' 
+                  : 'hover:brightness-110'
               }`}
+              style={activeTab !== 'history' ? {
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              } : {}}
             >
               <History size={14} />
               <span>Historial</span>
@@ -3119,9 +3344,16 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('stats')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeTab === 'stats' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                activeTab === 'stats' 
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/20' 
+                  : 'hover:brightness-110'
               }`}
+              style={activeTab !== 'stats' ? {
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              } : {}}
             >
               <BarChart2 size={14} />
               <span>Estadísticas</span>
@@ -3129,7 +3361,12 @@ export default function App() {
 
             <button
               onClick={() => setIsSettingsModalOpen(true)}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800 transition-all cursor-pointer"
+              className="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer hover:brightness-110"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              }}
             >
               <SettingsIcon size={14} />
               <span>Configuración</span>
@@ -3142,8 +3379,13 @@ export default function App() {
             className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
               musicConfig.enabled
                 ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300 shadow-sm'
-                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                : 'hover:brightness-110'
             }`}
+            style={!musicConfig.enabled ? {
+              backgroundColor: 'var(--theme-card-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            } : {}}
           >
             <Music size={14} className={musicConfig.enabled ? "text-emerald-400 animate-pulse" : ""} />
             <span>🎵 Música</span>
@@ -3166,7 +3408,14 @@ export default function App() {
               <div className="space-y-4">
                 
                 {/* BARRA DE HERRAMIENTAS RÁPIDAS DEL MENÚ PRINCIPAL */}
-                <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-2.5 backdrop-blur-md shadow-xl flex flex-wrap items-center justify-between gap-3">
+                <div 
+                  className="rounded-2xl p-2.5 backdrop-blur-md shadow-xl flex flex-wrap items-center justify-between gap-3 border"
+                  style={{
+                    backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                    borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                    color: 'var(--theme-text, #f8fafc)',
+                  }}
+                >
                   
                   {/* Izquierda: Botón Prominente Llamar Siguiente + Campo de Megafonía */}
                   <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[300px]">
@@ -3185,7 +3434,13 @@ export default function App() {
                     </button>
 
                     {/* Megafonía TTS Directa */}
-                    <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1 flex-1 min-w-[220px]">
+                    <div 
+                      className="flex items-center gap-1.5 border rounded-xl px-2.5 py-1 flex-1 min-w-[220px]"
+                      style={{
+                        backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                      }}
+                    >
                       <Megaphone size={14} className="text-indigo-400 shrink-0" />
                       <input
                         type="text"
@@ -3198,7 +3453,8 @@ export default function App() {
                           }
                         }}
                         placeholder="Escribe mensaje o ticket para anunciar..."
-                        className="bg-transparent border-none text-xs text-slate-200 focus:outline-none w-full px-1 py-0.5 placeholder:text-slate-600 font-medium"
+                        className="bg-transparent border-none text-xs focus:outline-none w-full px-1 py-0.5 font-medium"
+                        style={{ color: 'var(--theme-text, #f8fafc)' }}
                       />
                       <button
                         type="button"
@@ -3218,8 +3474,13 @@ export default function App() {
                       className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
                         isAutonomousMode
                           ? 'bg-amber-950/80 border-amber-500/50 text-amber-300 shadow-sm'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                          : 'hover:brightness-110'
                       }`}
+                      style={!isAutonomousMode ? {
+                        backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        color: 'var(--theme-text-muted, #94a3b8)',
+                      } : {}}
                       title="Auto-llamada inteligente de tickets"
                     >
                       <Brain size={13} className={isAutonomousMode ? "text-amber-400 animate-spin" : ""} />
@@ -3235,8 +3496,13 @@ export default function App() {
                       className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
                         !isOcrPaused
                           ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300 shadow-sm'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                          : 'hover:brightness-110'
                       }`}
+                      style={isOcrPaused ? {
+                        backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        color: 'var(--theme-text-muted, #94a3b8)',
+                      } : {}}
                       title="Lector automático de cámara OCR"
                     >
                       <Camera size={13} className={!isOcrPaused ? "text-emerald-400 animate-pulse" : ""} />
@@ -3248,8 +3514,13 @@ export default function App() {
                       className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
                         isWaitlistPaused
                           ? 'bg-rose-950/80 border-rose-500/50 text-rose-300 shadow-sm'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                          : 'hover:brightness-110'
                       }`}
+                      style={!isWaitlistPaused ? {
+                        backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        color: 'var(--theme-text-muted, #94a3b8)',
+                      } : {}}
                       title="Pausar o reanudar asignación de cola"
                     >
                       <Pause size={13} className={isWaitlistPaused ? "text-rose-400 animate-pulse" : ""} />
@@ -3258,7 +3529,12 @@ export default function App() {
 
                     <button
                       onClick={handleClearQueue}
-                      className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-rose-950/50 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-800/60 font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                      className="px-3 py-1.5 rounded-xl hover:bg-rose-950/50 hover:text-rose-300 border hover:border-rose-800/60 font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                      style={{
+                        backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        color: 'var(--theme-text-muted, #94a3b8)',
+                      }}
                       title="Vaciar tickets activos y en espera"
                     >
                       <RotateCcw size={13} />
@@ -3336,15 +3612,22 @@ export default function App() {
                   />
 
                   {/* Tarjeta IA OCR Autónoma */}
-                  <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-3">
+                  <div 
+                    className="border rounded-2xl p-3.5 space-y-3"
+                    style={{
+                      backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                      borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                      color: 'var(--theme-text, #f8fafc)',
+                    }}
+                  >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
                           <Brain size={16} />
                         </div>
                         <div>
-                          <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider">IA OCR AUTÓNOMA</h4>
-                          <p className="text-[10px] text-slate-400">Motor de aprendizaje continuo</p>
+                          <h4 className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--theme-text, #f8fafc)' }}>IA OCR AUTÓNOMA</h4>
+                          <p className="text-[10px]" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Motor de aprendizaje continuo</p>
                         </div>
                       </div>
                       <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
@@ -3354,35 +3637,66 @@ export default function App() {
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
-                        <span className="text-[9px] text-slate-500 block uppercase">Tickets aprendidos</span>
+                      <div 
+                        className="p-2 rounded-xl border"
+                        style={{
+                          backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        }}
+                      >
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Tickets aprendidos</span>
                         <span className="text-indigo-300 font-bold">5420</span>
                       </div>
-                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
-                        <span className="text-[9px] text-slate-500 block uppercase">Correcciones</span>
+                      <div 
+                        className="p-2 rounded-xl border"
+                        style={{
+                          backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        }}
+                      >
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Correcciones</span>
                         <span className="text-amber-400 font-bold">31</span>
                       </div>
-                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
-                        <span className="text-[9px] text-slate-500 block uppercase">Precisión</span>
+                      <div 
+                        className="p-2 rounded-xl border"
+                        style={{
+                          backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        }}
+                      >
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Precisión</span>
                         <span className="text-emerald-400 font-bold">99.7%</span>
                       </div>
-                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850">
-                        <span className="text-[9px] text-slate-500 block uppercase">Velocidad</span>
+                      <div 
+                        className="p-2 rounded-xl border"
+                        style={{
+                          backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                        }}
+                      >
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Velocidad</span>
                         <span className="text-emerald-300 font-bold">1.3 t/seg</span>
                       </div>
                     </div>
                   </div>
 
                   {/* Tarjeta TV Status & Sincronización */}
-                  <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-3">
+                  <div 
+                    className="border rounded-2xl p-3.5 space-y-3"
+                    style={{
+                      backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                      borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                      color: 'var(--theme-text, #f8fafc)',
+                    }}
+                  >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
                           <Tv size={16} />
                         </div>
                         <div>
-                          <h4 className="text-xs font-bold text-slate-100">Pantalla TV Pública</h4>
-                          <p className="text-[10px] text-slate-400">Sincronización directa sin recargar</p>
+                          <h4 className="text-xs font-bold" style={{ color: 'var(--theme-text, #f8fafc)' }}>Pantalla TV Pública</h4>
+                          <p className="text-[10px]" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Sincronización directa sin recargar</p>
                         </div>
                       </div>
                       <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
@@ -3391,13 +3705,19 @@ export default function App() {
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between text-xs font-mono bg-slate-950 p-2.5 rounded-xl border border-slate-850">
+                    <div 
+                      className="flex items-center justify-between text-xs font-mono p-2.5 rounded-xl border"
+                      style={{
+                        backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                      }}
+                    >
                       <div>
-                        <span className="text-[9px] text-slate-500 block uppercase">Flujo OCR → TV</span>
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Flujo OCR → TV</span>
                         <span className="text-emerald-400 font-bold">Listos (Directo)</span>
                       </div>
                       <div className="text-right">
-                        <span className="text-[9px] text-slate-500 block uppercase">Estado Cola</span>
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Estado Cola</span>
                         <span className="text-indigo-300 font-bold">Sincronizada</span>
                       </div>
                     </div>
@@ -3441,6 +3761,7 @@ export default function App() {
                     lastSyncTime={lastSyncTime}
                     lastLatency={lastLatency}
                     lastReceivedEvent={lastReceivedEvent}
+                    onForceReconnect={handleForceReconnect}
                   />
                 </div>
               </div>
@@ -3501,6 +3822,25 @@ export default function App() {
                 onSaveMusicConfig={handleSaveMusicConfig}
                 tickets={tickets}
                 onImportBackup={handleImportBackup}
+                deviceMode={deviceMode}
+                clientRole={clientRole}
+                pairingCode={pairingCode}
+                pairingStatus={pairingStatus}
+                serverIP={serverIP}
+                deviceName={deviceName}
+                connectedClients={connectedClients}
+                onSelectMode={handleSelectMode}
+                onSetClientRole={handleSetClientRole}
+                onSetDeviceName={handleSetDeviceName}
+                onSetServerIP={handleSetServerIP}
+                onStartPairing={handleStartPairing}
+                onRenameClient={handleRenameClient}
+                onRemoveClient={handleRemoveClient}
+                onBlockClient={handleBlockDevice}
+                onUnblockClient={handleUnblockDevice}
+                onDisconnect={handleDisconnect}
+                availableRooms={availableRooms}
+                lastConnectionError={lastConnectionError}
               />
             )}
 
@@ -3561,6 +3901,28 @@ export default function App() {
                 onSaveMusicConfig={handleSaveMusicConfig}
                 tickets={tickets}
                 onImportBackup={handleImportBackup}
+                deviceMode={deviceMode}
+                clientRole={clientRole}
+                pairingCode={pairingCode}
+                pairingStatus={pairingStatus}
+                serverIP={serverIP}
+                deviceName={deviceName}
+                connectedClients={connectedClients}
+                onSelectMode={(mode) => {
+                  setIsSettingsModalOpen(false);
+                  handleSelectMode(mode);
+                }}
+                onSetClientRole={handleSetClientRole}
+                onSetDeviceName={handleSetDeviceName}
+                onSetServerIP={handleSetServerIP}
+                onStartPairing={handleStartPairing}
+                onRenameClient={handleRenameClient}
+                onRemoveClient={handleRemoveClient}
+                onBlockClient={handleBlockDevice}
+                onUnblockClient={handleUnblockDevice}
+                onDisconnect={handleDisconnect}
+                availableRooms={availableRooms}
+                lastConnectionError={lastConnectionError}
               />
             </div>
           </div>
@@ -3602,8 +3964,15 @@ export default function App() {
 
 
       {/* Subtle Footer bar */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-4 mt-8">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-slate-600 font-mono">
+      <footer 
+        className="border-t py-4 mt-8 transition-colors duration-300"
+        style={{
+          backgroundColor: 'var(--theme-card-bg, #0f172a)',
+          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+          color: 'var(--theme-text-muted, #94a3b8)',
+        }}
+      >
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] font-mono">
           <span>Gestor y Pantalla de Tickets de Restaurante © 2026</span>
           <div className="flex gap-4">
             <span>IndexedDB activo</span>
@@ -3621,15 +3990,20 @@ export default function App() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -10, scale: 0.95 }}
             transition={{ type: 'spring', stiffness: 350, damping: 25 }}
-            className="fixed top-24 left-1/2 -translate-x-1/2 z-[9999] bg-slate-900/90 backdrop-blur-md border border-indigo-500/30 text-white py-2.5 px-5 rounded-2xl shadow-2xl shadow-indigo-500/10 flex items-center gap-3.5"
+            className="fixed top-24 left-1/2 -translate-x-1/2 z-[9999] backdrop-blur-md border py-2.5 px-5 rounded-2xl shadow-2xl flex items-center gap-3.5"
+            style={{
+              backgroundColor: 'var(--theme-card-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.2))',
+              color: 'var(--theme-text, #f8fafc)',
+            }}
           >
             <div className="w-6 h-6 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
               <Keyboard size={14} />
             </div>
             <div className="text-xs">
-              <span className="text-slate-400">Atajo activado: </span>
-              <strong className="text-slate-100">{shortcutNotification.action}</strong>
-              <span className="ml-2 font-mono bg-slate-950 border border-slate-800 px-1.5 py-0.5 rounded text-indigo-400 font-extrabold text-[10px]">
+              <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Atajo activado: </span>
+              <strong style={{ color: 'var(--theme-text, #f8fafc)' }}>{shortcutNotification.action}</strong>
+              <span className="ml-2 font-mono border px-1.5 py-0.5 rounded font-extrabold text-[10px]" style={{ backgroundColor: 'var(--theme-input-bg, #0f172a)', borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))', color: 'var(--theme-primary, #6366f1)' }}>
                 {shortcutNotification.key}
               </span>
             </div>
@@ -3656,46 +4030,57 @@ export default function App() {
 
       {/* Handshake/Authorization request Modal overlay (PC Server view only) */}
       {deviceMode === 'server' && pendingAuthRequests.length > 0 && (
-        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center z-[99999] px-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[99999] px-4">
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5"
+            className="w-full max-w-md border rounded-2xl p-6 shadow-2xl space-y-5"
+            style={{
+              backgroundColor: 'var(--theme-card-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              color: 'var(--theme-text, #f8fafc)',
+            }}
           >
             <div className="flex items-start gap-4">
               <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl">
                 <Smartphone className="w-6 h-6" />
               </div>
               <div className="space-y-1">
-                <h3 className="text-base font-bold text-slate-100">Solicitud de Conexión</h3>
-                <p className="text-xs text-slate-400 font-sans">
+                <h3 className="text-base font-bold" style={{ color: 'var(--theme-text, #f8fafc)' }}>Solicitud de Conexión</h3>
+                <p className="text-xs font-sans" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
                   Un nuevo dispositivo de tu red local está intentando vincularse.
                 </p>
               </div>
             </div>
 
-            <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 font-mono text-xs space-y-2">
+            <div 
+              className="p-4 rounded-xl border font-mono text-xs space-y-2"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
+            >
               <div className="flex justify-between">
-                <span className="text-slate-500">Nombre:</span>
-                <span className="text-slate-200 font-bold">{pendingAuthRequests[0].deviceName}</span>
+                <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Nombre:</span>
+                <span className="font-bold" style={{ color: 'var(--theme-text, #f8fafc)' }}>{pendingAuthRequests[0].deviceName}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Tipo de rol:</span>
+                <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Tipo de rol:</span>
                 <span className="text-indigo-400 font-bold uppercase">{pendingAuthRequests[0].deviceType || 'Tablet'}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500 font-mono text-[10px]">ID único:</span>
-                <span className="text-slate-600 font-mono text-[10px] truncate max-w-[180px]">{pendingAuthRequests[0].deviceId}</span>
+                <span className="font-mono text-[10px]" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>ID único:</span>
+                <span className="font-mono text-[10px] truncate max-w-[180px]" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>{pendingAuthRequests[0].deviceId}</span>
               </div>
             </div>
 
             {/* Checkbox to remember device */}
-            <label className="flex items-center gap-3 cursor-pointer select-none text-xs text-slate-300 bg-slate-950/40 p-3 rounded-xl border border-slate-800/50 hover:bg-slate-950/80 transition-colors">
+            <label className="flex items-center gap-3 cursor-pointer select-none text-xs p-3 rounded-xl border hover:brightness-110 transition-colors" style={{ backgroundColor: 'var(--theme-input-bg, #0f172a)', borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))', color: 'var(--theme-text, #f8fafc)' }}>
               <input
                 type="checkbox"
                 id="remember-device-checkbox"
                 defaultChecked={true}
-                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 bg-slate-900 border-slate-800 cursor-pointer"
+                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
               />
               <span className="font-semibold">Recordar este dispositivo en el futuro</span>
             </label>
@@ -3734,14 +4119,30 @@ export default function App() {
 
       {/* NAVEGACIÓN INFERIOR EXCLUSIVA PARA MÓVIL (Uso con una sola mano, área táctil >= 44px) */}
       {isMobile && (
-        <nav className="fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 border-t border-slate-800 backdrop-blur-xl p-1 shadow-2xl flex items-center justify-around pb-safe transition-colors duration-300">
+        <nav 
+          className="fixed bottom-0 left-0 right-0 z-50 border-t backdrop-blur-xl p-1 shadow-2xl flex items-center justify-around pb-safe transition-colors duration-300"
+          style={{
+            backgroundColor: 'var(--theme-card-bg, #0f172a)',
+            borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+            color: 'var(--theme-text, #f8fafc)',
+          }}
+        >
           <button
             onClick={() => setActiveTab('board')}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer border ${
               activeTab === 'board'
-                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'font-extrabold shadow-sm'
+                : 'hover:opacity-80'
             }`}
+            style={activeTab === 'board' ? {
+              backgroundColor: 'var(--theme-input-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.2))',
+              color: 'var(--theme-primary, #6366f1)',
+            } : {
+              backgroundColor: 'transparent',
+              borderColor: 'transparent',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
           >
             <LayoutGrid size={18} />
             <span className="text-[10px] mt-0.5">Tablero</span>
@@ -3749,11 +4150,20 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('tv_view')}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer border ${
               activeTab === 'tv_view'
-                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'font-extrabold shadow-sm'
+                : 'hover:opacity-80'
             }`}
+            style={activeTab === 'tv_view' ? {
+              backgroundColor: 'var(--theme-input-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.2))',
+              color: 'var(--theme-primary, #6366f1)',
+            } : {
+              backgroundColor: 'transparent',
+              borderColor: 'transparent',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
           >
             <Tv size={18} />
             <span className="text-[10px] mt-0.5">TV</span>
@@ -3761,11 +4171,20 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('history')}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer border ${
               activeTab === 'history'
-                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'font-extrabold shadow-sm'
+                : 'hover:opacity-80'
             }`}
+            style={activeTab === 'history' ? {
+              backgroundColor: 'var(--theme-input-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.2))',
+              color: 'var(--theme-primary, #6366f1)',
+            } : {
+              backgroundColor: 'transparent',
+              borderColor: 'transparent',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
           >
             <History size={18} />
             <span className="text-[10px] mt-0.5">Historial</span>
@@ -3773,11 +4192,20 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('stats')}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer border ${
               activeTab === 'stats'
-                ? 'text-indigo-400 font-extrabold bg-indigo-950/80 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'font-extrabold shadow-sm'
+                : 'hover:opacity-80'
             }`}
+            style={activeTab === 'stats' ? {
+              backgroundColor: 'var(--theme-input-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.2))',
+              color: 'var(--theme-primary, #6366f1)',
+            } : {
+              backgroundColor: 'transparent',
+              borderColor: 'transparent',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
           >
             <BarChart2 size={18} />
             <span className="text-[10px] mt-0.5">Stats</span>
@@ -3785,7 +4213,10 @@ export default function App() {
 
           <button
             onClick={() => setIsSettingsModalOpen(true)}
-            className="flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
+            className="flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] hover:opacity-80 transition-all cursor-pointer"
+            style={{
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
           >
             <SettingsIcon size={18} />
             <span className="text-[10px] mt-0.5">Ajustes</span>

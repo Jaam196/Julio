@@ -59,14 +59,28 @@ export default function ActiveTicket({
 
   if (!activeTicket) {
     return (
-      <div className="border border-slate-800/60 bg-slate-900/40 backdrop-blur-md rounded-[22px] p-6 flex flex-col items-center justify-center min-h-[310px] text-center shadow-2xl relative overflow-hidden group hover:border-slate-700/60 transition-all duration-300">
+      <div 
+        className="border backdrop-blur-md rounded-[22px] p-6 flex flex-col items-center justify-center min-h-[310px] text-center shadow-2xl relative overflow-hidden group transition-all duration-300"
+        style={{
+          backgroundColor: 'var(--theme-card-bg, #0f172a)',
+          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+          color: 'var(--theme-text, #f8fafc)',
+        }}
+      >
         <div className="absolute w-72 h-72 bg-violet-500/5 rounded-full blur-3xl animate-soft-pulse"></div>
         
-        <div className="p-3.5 bg-slate-950/50 border border-slate-800/80 rounded-full mb-3 text-slate-500 animate-pulse">
+        <div 
+          className="p-3.5 border rounded-full mb-3 animate-pulse"
+          style={{
+            backgroundColor: 'var(--theme-input-bg, #020617)',
+            borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+            color: 'var(--theme-text-muted, #94a3b8)',
+          }}
+        >
           <Volume2 size={32} />
         </div>
-        <h3 className="font-display font-extrabold text-sm text-slate-300 tracking-wide mb-1">TICKET ACTIVO</h3>
-        <p className="text-xs text-slate-500 max-w-xs leading-relaxed font-medium">
+        <h3 className="font-display font-extrabold text-sm tracking-wide mb-1" style={{ color: 'var(--theme-text, #f8fafc)' }}>TICKET ACTIVO</h3>
+        <p className="text-xs max-w-xs leading-relaxed font-medium" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
           Ningún ticket está siendo llamado ahora. Marca uno listo para anunciarlo.
         </p>
         
@@ -74,12 +88,12 @@ export default function ActiveTicket({
           <button
             onClick={handleCallNextWithFeedback}
             disabled={isCalling}
-            className={`mt-5 px-5 py-3 bg-gradient-to-r text-white font-display font-extrabold text-xs rounded-2xl shadow-lg transition-all duration-200 flex items-center gap-2 cursor-pointer ${
+            className={`mt-5 px-5 py-3 text-white font-display font-extrabold text-xs rounded-2xl shadow-lg transition-all duration-200 flex items-center gap-2 cursor-pointer ${
               isCalling 
-                ? 'from-slate-700 to-slate-800 shadow-slate-700/20 cursor-not-allowed animate-pulse'
+                ? 'bg-slate-700 shadow-slate-700/20 cursor-not-allowed animate-pulse'
                 : callSuccess
-                  ? 'from-emerald-600 to-teal-600 shadow-emerald-500/20'
-                  : 'from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 shadow-violet-500/20 active:scale-95 hover:shadow-violet-500/30'
+                  ? 'bg-emerald-600 shadow-emerald-500/20'
+                  : 'bg-violet-600 hover:bg-violet-500 shadow-violet-500/20 active:scale-95'
             }`}
           >
             {isCalling ? (
@@ -118,8 +132,15 @@ export default function ActiveTicket({
 
   const glowColor = activeGlowColor || '#a855f7';
   const borderStyle = isHighlightActive
-    ? { borderColor: glowColor, boxShadow: `0 0 35px ${glowColor}3d, inset 0 0 12px ${glowColor}1a` }
-    : { borderColor: 'rgba(51, 65, 85, 0.4)' };
+    ? { 
+        backgroundColor: 'var(--theme-card-bg, #0f172a)',
+        borderColor: glowColor, 
+        boxShadow: `0 0 35px ${glowColor}3d, inset 0 0 12px ${glowColor}1a` 
+      }
+    : { 
+        backgroundColor: 'var(--theme-card-bg, #0f172a)',
+        borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))' 
+      };
 
   return (
     <SwipeableTicket
@@ -134,7 +155,7 @@ export default function ActiveTicket({
       swipeRightColorClass="bg-emerald-600/90"
     >
       <div 
-        className="bg-slate-900/50 backdrop-blur-md border rounded-[22px] p-6 shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[310px] group transition-all duration-300 hover:border-slate-700/60"
+        className="backdrop-blur-md border rounded-[22px] p-6 shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[310px] group transition-all duration-300"
         style={borderStyle}
       >
         {/* Dynamic background glow under active ticket */}
@@ -154,7 +175,14 @@ export default function ActiveTicket({
               TICKET ACTIVO
             </span>
           </div>
-          <div className="flex items-center gap-1.5 bg-slate-950/80 border border-slate-800/80 px-3 py-1 rounded-xl text-[10px] text-slate-400 font-mono font-bold">
+          <div 
+            className="flex items-center gap-1.5 border px-3 py-1 rounded-xl text-[10px] font-mono font-bold"
+            style={{
+              backgroundColor: 'var(--theme-input-bg, #020617)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
+          >
             <Clock size={11} className="text-violet-400 animate-pulse" />
             <span>Listo hace: {formatTimeDuration(elapsedReadySeconds)}</span>
           </div>
@@ -168,11 +196,21 @@ export default function ActiveTicket({
             style={{ backgroundColor: glowColor }}
           ></div>
           
-          <div className="text-[72px] sm:text-[84px] font-mono font-black leading-none tracking-tighter text-white drop-shadow-[0_12px_24px_rgba(168,85,247,0.2)]">
+          <div 
+            className="text-[72px] sm:text-[84px] font-mono font-black leading-none tracking-tighter drop-shadow-[0_12px_24px_rgba(168,85,247,0.2)]"
+            style={{ color: 'var(--theme-text, #ffffff)' }}
+          >
             {activeTicket.number}
           </div>
           
-          <div className="mt-1 flex items-center gap-1.5 px-3 py-0.5 bg-slate-950/80 border border-slate-800/80 rounded-full text-[10px] text-slate-400 font-mono font-semibold">
+          <div 
+            className="mt-1 flex items-center gap-1.5 px-3 py-0.5 border rounded-full text-[10px] font-mono font-semibold"
+            style={{
+              backgroundColor: 'var(--theme-input-bg, #020617)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
+          >
             <Volume2 size={11} className="text-violet-400 animate-pulse" />
             <span>Llamados: <strong className="text-violet-300 font-bold">{announcementCount}</strong></span>
           </div>
@@ -204,7 +242,11 @@ export default function ActiveTicket({
             {/* ↩ Volver a Espera (Yellow) */}
             <button
               onClick={() => onReturnToWaiting(activeTicket.id)}
-              className="col-span-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 bg-slate-950/80 hover:bg-slate-900 border border-slate-800/80 text-amber-400 hover:text-amber-300 font-display font-extrabold rounded-2xl active:scale-95 transition-all duration-200 text-xs cursor-pointer"
+              className="col-span-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 border text-amber-400 font-display font-extrabold rounded-2xl active:scale-95 transition-all duration-200 text-xs cursor-pointer"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #020617)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
               title="Mover de vuelta a la lista de espera"
             >
               <ArrowRightLeft size={14} className="text-amber-500" />
@@ -214,7 +256,11 @@ export default function ActiveTicket({
             {/* 🔴 Marcar como Perdido / Desaparecido (Red) */}
             <button
               onClick={() => onMarkMissing(activeTicket.id)}
-              className="col-span-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 bg-slate-950/80 hover:bg-slate-900 border border-slate-800/80 text-rose-400 hover:text-rose-300 font-display font-extrabold rounded-2xl active:scale-95 transition-all duration-200 text-xs cursor-pointer"
+              className="col-span-1 flex flex-col items-center justify-center gap-1 py-2.5 px-1 border text-rose-400 font-display font-extrabold rounded-2xl active:scale-95 transition-all duration-200 text-xs cursor-pointer"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #020617)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
               title="Marcar como Desaparecido (Incidencia)"
             >
               <AlertCircle size={14} className="text-rose-500" />

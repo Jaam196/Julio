@@ -129,6 +129,7 @@ export const ThemeSettings: React.FC<ThemeSettingsProps> = ({ onToast }) => {
       name: editingTheme.name || 'Tema Personalizado',
       description: editingTheme.description || '',
       category: editingTheme.category || 'dark',
+      designStyle: editingTheme.designStyle || 'material',
       colors: editingTheme.colors as ThemeColors,
       advanced: editingTheme.advanced as ThemeAdvanced,
       isCustom: true,
@@ -309,13 +310,15 @@ export const ThemeSettings: React.FC<ThemeSettingsProps> = ({ onToast }) => {
           {/* Categories */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
             {[
-              { id: 'all', label: 'Todos (30+)' },
-              { id: 'dark', label: '🌙 Oscuros' },
-              { id: 'light', label: '☀️ Claros' },
-              { id: 'neon', label: '⚡ Neón' },
+              { id: 'all', label: 'Todos (12 Estilos)' },
+              { id: 'system', label: '💻 Sistemas (M3, iOS, Win11)' },
+              { id: 'dark', label: '🌙 Oscuro Pro' },
+              { id: 'light', label: '☀️ Minimal Stark' },
+              { id: 'neon', label: '⚡ Cyber / RGB' },
               { id: 'glass', label: '💎 Cristal / Glass' },
-              { id: 'corporate', label: '🏢 Corporativos' },
-              { id: 'vibrant', label: '🔥 Vibrantes' },
+              { id: 'retro', label: '🕹️ Retro Arcade' },
+              { id: 'industrial', label: '🏗️ Industrial' },
+              { id: 'vibrant', label: '🔥 One UI / Vibrantes' },
               { id: 'custom', label: '⭐ Mis Temas' },
             ].map((cat) => (
               <button

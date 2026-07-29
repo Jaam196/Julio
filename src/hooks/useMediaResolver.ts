@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { dbGetSettings, dbSaveSettings } from '../utils/db';
+import { buildApiUrl } from '../utils/urlHelper';
 
 // Helper to convert base64 dataURI to Blob synchronously and safely
 function dataURItoBlob(dataURI: string): Blob {
@@ -55,8 +56,7 @@ export function useMediaResolver(mediaKeyOrUrl: string | undefined, onMediaMissi
       if (mode === 'client') {
         const ip = localStorage.getItem('serverIP') || window.location.host;
         const code = localStorage.getItem('pairedCode') || '';
-        const protocol = window.location.protocol;
-        const httpUrl = `${protocol}//${ip}/api/media/${code}/${key}`;
+        const httpUrl = buildApiUrl(ip, `/api/media/${code}/${key}`);
 
         const loadAndCacheClientMedia = async () => {
           try {
@@ -174,14 +174,13 @@ export function useMediaResolver(mediaKeyOrUrl: string | undefined, onMediaMissi
       
       const mode = localStorage.getItem('deviceMode');
       const ip = localStorage.getItem('serverIP') || window.location.host;
-      const protocol = window.location.protocol;
       
       // Determine correct URL
       let httpUrl = mediaKeyOrUrl;
       if (mediaKeyOrUrl.startsWith('/')) {
         if (mode === 'client') {
           // Point to PC Server
-          httpUrl = `${protocol}//${ip}${mediaKeyOrUrl}`;
+          httpUrl = buildApiUrl(ip, mediaKeyOrUrl);
         } else {
           // Local/Server mode
           httpUrl = `${window.location.origin}${mediaKeyOrUrl}`;

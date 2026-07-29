@@ -178,15 +178,11 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
     if (src && videoRef.current) {
       const video = videoRef.current;
       
-      // Perform preflight JavaScript compatibility check
+      // Perform preflight JavaScript capability check
       const checks = performPreflightChecks(src);
       if (!checks.canPlay) {
-        const preflightErr = `Compatibility checks failed: ${checks.reason}. Initiating transcoding fallback...`;
-        console.warn(`[Preflight] ${preflightErr}`);
-        setLastError(preflightErr);
-        dispatchDiagnostic('preflight-failed', { reason: checks.reason });
-        triggerStepByStepFallback();
-        return;
+        console.warn(`[Preflight Warning] ${checks.reason}`);
+        dispatchDiagnostic('preflight-warning', { reason: checks.reason });
       }
 
       // Explicitly set muted and attributes to bypass autoplay blocking policies on all browsers (TVs, tablets, PCs)

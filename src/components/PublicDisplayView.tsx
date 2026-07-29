@@ -16,6 +16,7 @@ interface PublicDisplayViewProps {
   lastSyncTime?: string;
   lastLatency?: number | null;
   lastReceivedEvent?: string;
+  onForceReconnect?: () => void;
 }
 
 const fontStyles = `
@@ -148,6 +149,7 @@ export default function PublicDisplayView({
   lastSyncTime = 'Nunca',
   lastLatency = null,
   lastReceivedEvent = 'Ninguno',
+  onForceReconnect,
 }: PublicDisplayViewProps) {
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -960,7 +962,18 @@ export default function PublicDisplayView({
       <style dangerouslySetInnerHTML={{ __html: fontStyles }} />
 
       {/* Background Permanent Layer (Completely Independent from Ticket State) */}
-      {currentVideoUrl ? (
+      {isStandbyActive && currentSlide ? (
+        <div className="absolute inset-0 w-full h-full z-0">
+          <ResolvedImage
+            mediaKeyOrUrl={currentSlide.url}
+            onMediaMissing={() => onMediaMissing?.(`standby_image_${currentSlide.id}`)}
+            className="w-full h-full"
+            style={{ objectFit: appConfig.publicDisplayStandbyFit || 'cover' }}
+            alt="Standby view"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+      ) : (appConfig.publicDisplayBgType === 'video' || (!appConfig.publicDisplayBgType && currentVideoUrl)) && currentVideoUrl ? (
         <ResolvedVideo 
           mediaKeyOrUrl={currentVideoUrl}
           onMediaMissing={() => onMediaMissing?.(currentVideo ? `bg_video_${currentVideo.id}` : 'bg_video')}
@@ -972,25 +985,14 @@ export default function PublicDisplayView({
           className="absolute inset-0 w-full h-full object-cover pointer-events-none z-0"
           style={{ opacity: 1 }}
         />
-      ) : appConfig.publicDisplayBgType === 'image' && appConfig.publicDisplayBgImage ? (
+      ) : (appConfig.publicDisplayBgType === 'image' || (!appConfig.publicDisplayBgType && appConfig.publicDisplayBgImage)) && appConfig.publicDisplayBgImage ? (
         <ResolvedImage 
           mediaKeyOrUrl={appConfig.publicDisplayBgImage}
           onMediaMissing={() => onMediaMissing?.('bg_image')}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-30 z-0"
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-40 z-0"
           alt="Public display bg"
           referrerPolicy="no-referrer"
         />
-      ) : isStandbyActive && currentSlide ? (
-        <div className="absolute inset-0 w-full h-full z-0">
-          <ResolvedImage
-            mediaKeyOrUrl={currentSlide.url}
-            onMediaMissing={() => onMediaMissing?.(`standby_image_${currentSlide.id}`)}
-            className="w-full h-full"
-            style={{ objectFit: appConfig.publicDisplayStandbyFit || 'cover' }}
-            alt="Standby view"
-            referrerPolicy="no-referrer"
-          />
-        </div>
       ) : null}
 
       {/* Background ambient light - subtle glow matching number color */}
@@ -1006,13 +1008,18 @@ export default function PublicDisplayView({
       {/* Mini status indicator at top left */}
       <button 
         onClick={() => setShowDiagnosticPanel(prev => !prev)}
-        className="absolute top-6 left-6 flex items-center gap-2.5 opacity-60 hover:opacity-100 bg-slate-950/40 hover:bg-slate-950/80 border border-slate-800 px-3 py-1.5 rounded-xl transition-all z-50 cursor-pointer text-left"
+        className="absolute top-6 left-6 flex items-center gap-2.5 opacity-60 hover:opacity-100 border px-3 py-1.5 rounded-xl transition-all z-50 cursor-pointer text-left backdrop-blur-md"
+        style={{
+          backgroundColor: 'var(--theme-card-bg, rgba(2, 6, 23, 0.6))',
+          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.15))',
+          color: 'var(--theme-text, #f8fafc)',
+        }}
         title="Clic para mostrar diagnóstico de vídeo"
       >
         <Tv size={15} style={{ color: text }} />
-        <span className="text-[11px] font-mono tracking-wider uppercase text-slate-300">PANTALLA PÚBLICA</span>
+        <span className="text-[11px] font-mono tracking-wider uppercase" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>PANTALLA PÚBLICA</span>
         <div className={`w-2 h-2 rounded-full ${pairingStatus === 'paired' ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`} />
-        <span className="text-[9px] font-mono bg-slate-900 text-indigo-400 px-1 rounded border border-slate-800 font-bold font-mono">DEBUG</span>
+        <span className="text-[9px] font-mono border px-1 rounded font-bold" style={{ backgroundColor: 'var(--theme-input-bg, #020617)', borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))', color: 'var(--theme-primary, #6366f1)' }}>DEBUG</span>
       </button>
 
       {/* Helper Fullscreen banner if not fullscreen */}
@@ -1031,11 +1038,16 @@ export default function PublicDisplayView({
         {/* Diagnostic Toggle Button */}
         <button
           onClick={() => setShowDiagnosticPanel(prev => !prev)}
-          className={`p-2.5 border rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-sm cursor-pointer ${
-            showDiagnosticPanel || appConfig.publicDisplayDiagnosticEnabled
-              ? 'bg-indigo-600 border-indigo-500 text-white shadow-indigo-600/20'
-              : 'bg-slate-955/85 border-slate-800 text-slate-300 hover:text-white hover:border-slate-750'
-          }`}
+          className="p-2.5 border rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-sm cursor-pointer"
+          style={showDiagnosticPanel || appConfig.publicDisplayDiagnosticEnabled ? {
+            backgroundColor: 'var(--theme-primary, #6366f1)',
+            borderColor: 'var(--theme-primary, #6366f1)',
+            color: '#ffffff',
+          } : {
+            backgroundColor: 'var(--theme-card-bg, rgba(2, 6, 23, 0.8))',
+            borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.15))',
+            color: 'var(--theme-text, #f8fafc)',
+          }}
           title="Panel de Diagnóstico de Vídeo"
         >
           <Activity size={14} />
@@ -1044,7 +1056,12 @@ export default function PublicDisplayView({
         {/* Fullscreen manual toggle button */}
         <button
           onClick={toggleFullscreen}
-          className="p-2.5 bg-slate-955/85 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-750 rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-sm cursor-pointer"
+          className="p-2.5 border rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-sm cursor-pointer"
+          style={{
+            backgroundColor: 'var(--theme-card-bg, rgba(2, 6, 23, 0.8))',
+            borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.15))',
+            color: 'var(--theme-text, #f8fafc)',
+          }}
           title={isFullscreen ? "Salir de Pantalla Completa" : "Pantalla Completa"}
         >
           {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
@@ -1059,11 +1076,16 @@ export default function PublicDisplayView({
               setShowExitConfirm(true);
             }
           }}
-          className={`px-4 py-2 border rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-sm cursor-pointer flex items-center gap-2 ${
-            showExitConfirm
-              ? 'bg-rose-600 border-rose-500 text-white animate-pulse'
-              : 'bg-slate-955/85 border-slate-800 text-slate-300 hover:text-white hover:border-rose-500/30'
-          }`}
+          className="px-4 py-2 border rounded-xl text-xs font-bold transition-all shadow-lg backdrop-blur-sm cursor-pointer flex items-center gap-2"
+          style={showExitConfirm ? {
+            backgroundColor: '#dc2626',
+            borderColor: '#ef4444',
+            color: '#ffffff',
+          } : {
+            backgroundColor: 'var(--theme-card-bg, rgba(2, 6, 23, 0.8))',
+            borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.15))',
+            color: 'var(--theme-text, #f8fafc)',
+          }}
         >
           <X size={14} />
           <span>{showExitConfirm ? '¿Seguro que desea salir?' : 'Salir del Modo Pantalla'}</span>
@@ -1099,11 +1121,21 @@ export default function PublicDisplayView({
         )}
       </div>
 
-      {/* Subtle connection warning if disconnected - only visible during diagnostics to avoid disturbing customers */}
-      {pairingStatus !== 'paired' && showDiagnosticPanel && (
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 px-5 py-3 bg-rose-950/80 border border-rose-500/30 rounded-2xl flex items-center gap-2.5 text-rose-400 text-xs font-bold animate-pulse shadow-2xl backdrop-blur-md z-50">
-          <WifiOff size={15} />
-          <span>Buscando conexión con el PC Servidor...</span>
+      {/* Real-time connection auto-reconnect banner when disconnected */}
+      {pairingStatus !== 'paired' && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-amber-950/90 border border-amber-500/40 rounded-full flex items-center gap-3 text-amber-300 text-xs font-bold shadow-2xl backdrop-blur-md z-[99999]">
+          <div className="flex items-center gap-2 animate-pulse">
+            <WifiOff size={14} className="text-amber-400" />
+            <span>Reconectando con el Servidor (comprobando cada 1s)...</span>
+          </div>
+          {onForceReconnect && (
+            <button
+              onClick={onForceReconnect}
+              className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-full text-[11px] transition-all cursor-pointer shadow-md"
+            >
+              Forzar Conexión Activa
+            </button>
+          )}
         </div>
       )}
 
@@ -1143,16 +1175,26 @@ export default function PublicDisplayView({
           {diagTab === 'conn' ? (
             <div className="space-y-2.5">
               {/* Status Banner */}
-              <div className={`p-2.5 rounded-xl border flex items-center gap-2.5 ${
+              <div className={`p-2.5 rounded-xl border flex items-center justify-between gap-2.5 ${
                 pairingStatus === 'paired' 
                   ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-400' 
                   : 'bg-rose-950/30 border-rose-800/40 text-rose-400 animate-pulse'
               }`}>
-                <div className={`h-2.5 w-2.5 rounded-full ${pairingStatus === 'paired' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-                <div className="flex-1">
-                  <span className="text-[8px] uppercase block text-slate-500 font-sans">Estado de Red</span>
-                  <span className="font-bold text-[10px]">{pairingStatus === 'paired' ? 'CONECTADA Y VINCULADA' : 'BUSCANDO PC SERVIDOR...'}</span>
+                <div className="flex items-center gap-2.5">
+                  <div className={`h-2.5 w-2.5 rounded-full ${pairingStatus === 'paired' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+                  <div>
+                    <span className="text-[8px] uppercase block text-slate-500 font-sans">Estado de Red</span>
+                    <span className="font-bold text-[10px]">{pairingStatus === 'paired' ? 'CONECTADA Y VINCULADA' : 'BUSCANDO PC SERVIDOR...'}</span>
+                  </div>
                 </div>
+                {onForceReconnect && (
+                  <button
+                    onClick={onForceReconnect}
+                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-[9px] transition-all cursor-pointer shrink-0"
+                  >
+                    Reconectar
+                  </button>
+                )}
               </div>
 
               {/* Grid of details */}

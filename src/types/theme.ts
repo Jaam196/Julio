@@ -1,3 +1,17 @@
+export type DesignStyle = 
+  | 'material'
+  | 'ios'
+  | 'windows11'
+  | 'oneui'
+  | 'minimal'
+  | 'pro-dark'
+  | 'futuristic'
+  | 'glass'
+  | 'neumorphism'
+  | 'industrial'
+  | 'gaming-rgb'
+  | 'retro';
+
 export interface ThemeColors {
   primary: string;
   secondary: string;
@@ -10,6 +24,16 @@ export interface ThemeColors {
   text: string;
   icon: string;
   tableBg: string;
+  // Enhanced theme styling tokens
+  bgGradient?: string;
+  cardBorder?: string;
+  buttonGradient?: string;
+  headerBg?: string;
+  glowColor?: string;
+  textMuted?: string;
+  cardHoverBg?: string;
+  inputBg?: string;
+  sidebarBg?: string;
 }
 
 export interface ThemeAdvanced {
@@ -17,18 +41,20 @@ export interface ThemeAdvanced {
   buttonSize: 'sm' | 'md' | 'lg';
   fontSize: 'sm' | 'md' | 'lg';
   spacing: 'compact' | 'normal' | 'relaxed';
-  shadow: 'none' | 'subtle' | 'medium' | 'glow';
+  shadow: 'none' | 'subtle' | 'medium' | 'glow' | 'neumorphic' | 'retro3d';
   glassmorphism: boolean;
   glassBlur: number; // in px, e.g. 12
   animationIntensity: 'none' | 'subtle' | 'normal' | 'high';
   transitionDuration: 'fast' | 'normal' | 'slow';
+  fontFamily?: string;
 }
 
 export interface ThemePreset {
   id: string;
   name: string;
   description: string;
-  category: 'dark' | 'light' | 'neon' | 'glass' | 'corporate' | 'vibrant';
+  category: 'dark' | 'light' | 'neon' | 'glass' | 'corporate' | 'vibrant' | 'system' | 'retro' | 'industrial';
+  designStyle: DesignStyle;
   colors: ThemeColors;
   advanced: ThemeAdvanced;
   isCustom?: boolean;

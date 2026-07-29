@@ -1,10 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=Changa:wght@600;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Rajdhani:wght@600;700&family=Space+Grotesk:wght@500;600;700;800&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Space Grotesk", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-sans: var(--theme-font-family, "Inter", ui-sans-serif, system-ui, sans-serif);
+  --font-display: var(--theme-font-family, "Space Grotesk", sans-serif);
+  --font-mono: var(--theme-font-family, "JetBrains Mono", ui-monospace, SFMono-Regular, monospace);
 }
 
 :root {
@@ -14,42 +14,93 @@
   --theme-warning: #f59e0b;
   --theme-error: #ef4444;
   --theme-bg: #020617;
+  --theme-bg-gradient: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(99, 102, 241, 0.15), #020617 85%);
   --theme-card-bg: #0f172a;
+  --theme-card-hover-bg: #1e293b;
+  --theme-card-border: rgba(99, 102, 241, 0.25);
   --theme-button-bg: #4f46e5;
+  --theme-button-gradient: linear-gradient(135deg, #4f46e5, #6366f1);
+  --theme-header-bg: rgba(15, 23, 42, 0.85);
+  --theme-glow-color: rgba(99, 102, 241, 0.35);
   --theme-text: #f8fafc;
+  --theme-text-muted: #94a3b8;
   --theme-icon: #818cf8;
   --theme-table-bg: #020617;
+  --theme-input-bg: #0f172a;
   --theme-radius: 16px;
+  --theme-glass-blur: 12px;
 }
 
 @layer base {
   body {
+    font-family: var(--theme-font-family, 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif);
     background-color: var(--theme-bg, #020617);
+    background-image: var(--theme-bg-gradient);
+    background-attachment: fixed;
     color: var(--theme-text, #f8fafc);
     overflow-y: auto;
-    transition: background-color 0.25s ease, color 0.25s ease;
+    transition: background-color 0.3s ease, background-image 0.3s ease, color 0.3s ease, font-family 0.3s ease;
   }
 }
 
 /* Theme utility classes */
 .app-theme-bg {
   background-color: var(--theme-bg, #020617) !important;
+  background-image: var(--theme-bg-gradient) !important;
 }
 
-.app-theme-card {
+.app-theme-card, .theme-card {
   background-color: var(--theme-card-bg, #0f172a) !important;
+  border: 1px solid var(--theme-card-border, rgba(255, 255, 255, 0.1)) !important;
+  border-radius: var(--theme-radius, 16px);
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.app-theme-button {
-  background-color: var(--theme-button-bg, #4f46e5) !important;
+.theme-card-glow {
+  background-color: var(--theme-card-bg, #0f172a) !important;
+  border: 1px solid var(--theme-primary, #6366f1) !important;
+  border-radius: var(--theme-radius, 16px);
+  box-shadow: 0 0 25px var(--theme-glow-color, rgba(99, 102, 241, 0.35));
+  backdrop-filter: blur(var(--theme-glass-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--theme-glass-blur, 0px));
 }
 
-.app-theme-text {
+.app-theme-button, .theme-button-primary {
+  background: var(--theme-button-gradient, linear-gradient(135deg, #4f46e5, #6366f1)) !important;
+  color: #ffffff !important;
+  border-radius: var(--theme-radius, 12px);
+  box-shadow: 0 4px 15px var(--theme-glow-color, rgba(99, 102, 241, 0.3));
+  transition: all 0.2s ease;
+}
+
+.app-theme-button:hover, .theme-button-primary:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.app-theme-text, .theme-text {
   color: var(--theme-text, #f8fafc) !important;
+}
+
+.theme-text-muted {
+  color: var(--theme-text-muted, #94a3b8) !important;
 }
 
 .app-theme-primary {
   color: var(--theme-primary, #6366f1) !important;
+}
+
+.theme-border {
+  border-color: var(--theme-card-border, rgba(255, 255, 255, 0.1)) !important;
+}
+
+.theme-header {
+  background-color: var(--theme-header-bg, rgba(15, 23, 42, 0.85)) !important;
+  border-bottom: 1px solid var(--theme-card-border, rgba(255, 255, 255, 0.1)) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 /* Custom premium glow animations and card designs */
@@ -90,7 +141,7 @@
 
 /* Global Form Controls & Inputs integration */
 input, select, textarea {
-  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease, font-family 0.25s ease;
 }
 
 /* Global Table design token integration */
@@ -109,3 +160,311 @@ table {
   border-radius: var(--theme-radius, 16px);
 }
 
+/* ==========================================
+   DESIGN THEME OVERRIDES ([data-design-theme])
+   ========================================== */
+
+/* 1. MATERIAL DESIGN MODERN (M3) */
+[data-design-theme="material"] {
+  --theme-font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --theme-card-radius: 24px;
+  --theme-button-radius: 9999px;
+  --theme-input-radius: 12px;
+}
+[data-design-theme="material"] .theme-card,
+[data-design-theme="material"] .app-theme-card {
+  border-radius: 24px !important;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.25) !important;
+}
+[data-design-theme="material"] .theme-button-primary,
+[data-design-theme="material"] .app-theme-button {
+  border-radius: 9999px !important;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* 2. APPLE / iOS */
+[data-design-theme="ios"] {
+  --theme-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  --theme-card-radius: 20px;
+  --theme-button-radius: 14px;
+  --theme-input-radius: 12px;
+}
+[data-design-theme="ios"] .theme-card,
+[data-design-theme="ios"] .app-theme-card {
+  border-radius: 20px !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25) !important;
+}
+[data-design-theme="ios"] .theme-button-primary,
+[data-design-theme="ios"] .app-theme-button {
+  border-radius: 14px !important;
+  box-shadow: 0 4px 12px rgba(10, 132, 255, 0.3) !important;
+  font-weight: 600;
+}
+[data-design-theme="ios"] .theme-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: blur(24px) !important;
+}
+
+/* 3. WINDOWS 11 FLUENT */
+[data-design-theme="windows11"] {
+  --theme-font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --theme-card-radius: 8px;
+  --theme-button-radius: 6px;
+  --theme-input-radius: 4px;
+}
+[data-design-theme="windows11"] .theme-card,
+[data-design-theme="windows11"] .app-theme-card {
+  border-radius: 8px !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22) !important;
+  backdrop-filter: blur(12px) !important;
+}
+[data-design-theme="windows11"] .theme-button-primary,
+[data-design-theme="windows11"] .app-theme-button {
+  border-radius: 6px !important;
+  border-bottom: 2px solid var(--theme-primary) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* 4. SAMSUNG ONE UI */
+[data-design-theme="oneui"] {
+  --theme-font-family: 'Outfit', sans-serif;
+  --theme-card-radius: 28px;
+  --theme-button-radius: 24px;
+  --theme-input-radius: 20px;
+}
+[data-design-theme="oneui"] .theme-card,
+[data-design-theme="oneui"] .app-theme-card {
+  border-radius: 28px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2) !important;
+}
+[data-design-theme="oneui"] .theme-button-primary,
+[data-design-theme="oneui"] .app-theme-button {
+  border-radius: 24px !important;
+  font-weight: 700;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+
+/* 5. MINIMALISTA STARK */
+[data-design-theme="minimal"] {
+  --theme-font-family: 'Space Grotesk', sans-serif;
+  --theme-card-radius: 0px;
+  --theme-button-radius: 0px;
+  --theme-input-radius: 0px;
+}
+[data-design-theme="minimal"] .theme-card,
+[data-design-theme="minimal"] .app-theme-card {
+  border-radius: 0px !important;
+  border: 2px solid var(--theme-text, #000000) !important;
+  box-shadow: 4px 4px 0px var(--theme-text, #000000) !important;
+  backdrop-filter: none !important;
+}
+[data-design-theme="minimal"] .theme-button-primary,
+[data-design-theme="minimal"] .app-theme-button {
+  border-radius: 0px !important;
+  border: 2px solid var(--theme-text, #000000) !important;
+  box-shadow: 3px 3px 0px var(--theme-text, #000000) !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+[data-design-theme="minimal"] .theme-button-primary:hover,
+[data-design-theme="minimal"] .app-theme-button:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0px var(--theme-text, #000000) !important;
+}
+
+/* 6. PROFESIONAL OSCURO (TECHNICAL SLATE) */
+[data-design-theme="pro-dark"] {
+  --theme-font-family: 'JetBrains Mono', monospace;
+  --theme-card-radius: 6px;
+  --theme-button-radius: 6px;
+  --theme-input-radius: 4px;
+}
+[data-design-theme="pro-dark"] .theme-card,
+[data-design-theme="pro-dark"] .app-theme-card {
+  border-radius: 6px !important;
+  border: 1px solid rgba(56, 189, 248, 0.25) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4) !important;
+}
+[data-design-theme="pro-dark"] .theme-button-primary,
+[data-design-theme="pro-dark"] .app-theme-button {
+  border-radius: 6px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 0.825rem;
+  letter-spacing: -0.01em;
+}
+
+/* 7. FUTURISTA CYBERPUNK */
+[data-design-theme="futuristic"] {
+  --theme-font-family: 'Rajdhani', sans-serif;
+  --theme-card-radius: 4px;
+  --theme-button-radius: 2px;
+  --theme-input-radius: 2px;
+}
+[data-design-theme="futuristic"] .theme-card,
+[data-design-theme="futuristic"] .app-theme-card {
+  border-radius: 2px !important;
+  border: 1px solid var(--theme-primary, #00f0ff) !important;
+  box-shadow: 0 0 15px var(--theme-glow-color, rgba(0, 240, 255, 0.4)) !important;
+  position: relative;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+}
+[data-design-theme="futuristic"] .theme-button-primary,
+[data-design-theme="futuristic"] .app-theme-button {
+  border-radius: 2px !important;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  box-shadow: 0 0 20px var(--theme-glow-color, rgba(0, 240, 255, 0.5)) !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* 8. CRISTAL (GLASSMORPHISM) */
+[data-design-theme="glass"] {
+  --theme-font-family: 'Plus Jakarta Sans', sans-serif;
+  --theme-card-radius: 20px;
+  --theme-button-radius: 14px;
+  --theme-input-radius: 12px;
+}
+[data-design-theme="glass"] .theme-card,
+[data-design-theme="glass"] .app-theme-card {
+  border-radius: 20px !important;
+  background-color: var(--theme-card-bg, rgba(30, 41, 59, 0.55)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35) !important;
+}
+
+/* 9. NEUMORPHISM 3D */
+[data-design-theme="neumorphism"] {
+  --theme-font-family: 'Plus Jakarta Sans', sans-serif;
+  --theme-card-radius: 22px;
+  --theme-button-radius: 16px;
+  --theme-input-radius: 14px;
+}
+[data-design-theme="neumorphism"] .theme-card,
+[data-design-theme="neumorphism"] .app-theme-card {
+  border-radius: 22px !important;
+  border: none !important;
+  box-shadow: 8px 8px 18px rgba(0, 0, 0, 0.45), -8px -8px 18px rgba(255, 255, 255, 0.04) !important;
+  background-color: var(--theme-card-bg, #181528) !important;
+}
+[data-design-theme="neumorphism"] .theme-button-primary,
+[data-design-theme="neumorphism"] .app-theme-button {
+  border-radius: 16px !important;
+  box-shadow: 6px 6px 14px rgba(0, 0, 0, 0.4), -6px -6px 14px rgba(255, 255, 255, 0.04) !important;
+  border: none !important;
+  transition: all 0.15s ease;
+}
+[data-design-theme="neumorphism"] .theme-button-primary:active,
+[data-design-theme="neumorphism"] .app-theme-button:active {
+  box-shadow: inset 4px 4px 8px rgba(0, 0, 0, 0.5), inset -4px -4px 8px rgba(255, 255, 255, 0.05) !important;
+  transform: translateY(1px);
+}
+[data-design-theme="neumorphism"] input,
+[data-design-theme="neumorphism"] select {
+  box-shadow: inset 3px 3px 6px rgba(0, 0, 0, 0.5), inset -3px -3px 6px rgba(255, 255, 255, 0.04) !important;
+  border: none !important;
+}
+
+/* 10. INDUSTRIAL HEAVY DUTY */
+[data-design-theme="industrial"] {
+  --theme-font-family: 'Changa', sans-serif;
+  --theme-card-radius: 4px;
+  --theme-button-radius: 4px;
+  --theme-input-radius: 4px;
+}
+[data-design-theme="industrial"] .theme-card,
+[data-design-theme="industrial"] .app-theme-card {
+  border-radius: 4px !important;
+  border: 3px solid var(--theme-primary, #f59e0b) !important;
+  box-shadow: 0 6px 0px rgba(0, 0, 0, 0.6) !important;
+}
+[data-design-theme="industrial"] .theme-button-primary,
+[data-design-theme="industrial"] .app-theme-button {
+  border-radius: 4px !important;
+  border: 2px solid #000000 !important;
+  box-shadow: 0 4px 0px #000000 !important;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+[data-design-theme="industrial"] .theme-button-primary:active,
+[data-design-theme="industrial"] .app-theme-button:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0px #000000 !important;
+}
+
+/* 11. GAMING RGB */
+[data-design-theme="gaming-rgb"] {
+  --theme-font-family: 'Chakra Petch', sans-serif;
+  --theme-card-radius: 14px;
+  --theme-button-radius: 10px;
+  --theme-input-radius: 8px;
+}
+@keyframes rgbGlowBorder {
+  0% { border-color: #ff0055; box-shadow: 0 0 15px rgba(255, 0, 85, 0.4); }
+  33% { border-color: #00f0ff; box-shadow: 0 0 15px rgba(0, 240, 255, 0.4); }
+  66% { border-color: #00ff66; box-shadow: 0 0 15px rgba(0, 255, 102, 0.4); }
+  100% { border-color: #ff0055; box-shadow: 0 0 15px rgba(255, 0, 85, 0.4); }
+}
+[data-design-theme="gaming-rgb"] .theme-card,
+[data-design-theme="gaming-rgb"] .app-theme-card {
+  border-radius: 14px !important;
+  border: 2px solid #00f0ff !important;
+  animation: rgbGlowBorder 6s infinite linear;
+}
+[data-design-theme="gaming-rgb"] .theme-button-primary,
+[data-design-theme="gaming-rgb"] .app-theme-button {
+  border-radius: 10px !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.5) !important;
+}
+
+/* 12. RETRO WINDOWS 95 / ARCADE */
+[data-design-theme="retro"] {
+  --theme-font-family: 'Courier New', monospace;
+  --theme-card-radius: 0px;
+  --theme-button-radius: 0px;
+  --theme-input-radius: 0px;
+}
+[data-design-theme="retro"] .theme-card,
+[data-design-theme="retro"] .app-theme-card {
+  border-radius: 0px !important;
+  border: 2px solid !important;
+  border-color: #ffffff #808080 #808080 #ffffff !important;
+  box-shadow: 2px 2px 0px #000000 !important;
+  background-color: var(--theme-card-bg, #c0c0c0) !important;
+  color: #000000 !important;
+}
+[data-design-theme="retro"] .theme-button-primary,
+[data-design-theme="retro"] .app-theme-button {
+  border-radius: 0px !important;
+  border: 2px solid !important;
+  border-color: #ffffff #808080 #808080 #ffffff !important;
+  background: #c0c0c0 !important;
+  color: #000000 !important;
+  font-weight: bold;
+  box-shadow: 1px 1px 0px #000000 !important;
+}
+[data-design-theme="retro"] .theme-button-primary:active,
+[data-design-theme="retro"] .app-theme-button:active {
+  border-color: #808080 #ffffff #ffffff #808080 !important;
+  box-shadow: none !important;
+}
+[data-design-theme="retro"] input,
+[data-design-theme="retro"] select {
+  border-radius: 0px !important;
+  border: 2px solid !important;
+  border-color: #808080 #ffffff #ffffff #808080 !important;
+  background-color: #ffffff !important;
+  color: #000000 !important;
+}

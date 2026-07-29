@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { VoiceSettings, ShortcutConfig, AppConfig, MusicConfig, Ticket } from '../types';
 import { musicController } from '../utils/musicController';
-import { DEFAULT_PHRASES, replaceNumbersWithWords } from '../utils/audio';
+import { DEFAULT_PHRASES, replaceNumbersWithWords, speakText } from '../utils/audio';
 import { dbSaveSettings } from '../utils/db';
 import { ResolvedImage, ResolvedVideo } from './ResolvedMedia';
 import { 
@@ -918,7 +918,9 @@ export default function SettingsPanel({
 
   // Filter voices based on selected language
   const filteredVoices = voices.filter((v) => {
-    return v.lang.toLowerCase().startsWith(voiceSettings.lang);
+    const vLangShort = v.lang.toLowerCase().split(/[-_]/)[0];
+    const targetLangShort = (voiceSettings.lang || 'es').toLowerCase().split(/[-_]/)[0];
+    return vLangShort === targetLangShort;
   });
 
   const femaleNames = ["female", "zira", "hazel", "helena", "elsa", "salli", "karen", "moira", "tessa", "alice", "samantha", "siri", "sabina", "paola", "marisol", "victoria", "joana"];
@@ -933,6 +935,19 @@ export default function SettingsPanel({
     if (voiceSettings.voiceGender === 'male') return !isFemale;
     return true;
   });
+
+  const handleTestVoice = () => {
+    const lang = (voiceSettings.lang || 'es').toLowerCase();
+    let sample = 'Ticket A 12, por favor pasar al modulo 1.';
+    if (lang.startsWith('en')) {
+      sample = 'Ticket A 12, please proceed to counter 1.';
+    } else if (lang.startsWith('fr')) {
+      sample = 'Ticket A 12, veuillez vous présenter al guichet 1.';
+    } else if (lang.startsWith('pt')) {
+      sample = 'Senha A 12, por favor dirija-se ao guiché 1.';
+    }
+    speakText(sample, voiceSettings);
+  };
 
   // Handle shortcut recording
   useEffect(() => {
@@ -1459,7 +1474,18 @@ export default function SettingsPanel({
 
           {/* Voice Selector */}
           <div className="space-y-1.5">
-            <label className="text-xs text-slate-400">Voz del Sistema</label>
+            <div className="flex justify-between items-center">
+              <label className="text-xs text-slate-400">Voz del Sistema</label>
+              <button
+                type="button"
+                onClick={handleTestVoice}
+                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-[11px] flex items-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer"
+                title="Probar sonido de la voz seleccionada"
+              >
+                <Volume2 size={12} />
+                Probar Voz
+              </button>
+            </div>
             <select
               value={voiceSettings.voiceURI}
               onChange={(e) => updateVoiceSetting('voiceURI', e.target.value)}

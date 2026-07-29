@@ -57,7 +57,14 @@ export default function ServerConsoleView({
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Banner / Title Bar */}
-      <div className="bg-gradient-to-r from-slate-900 to-indigo-950 border border-indigo-900/40 p-5 rounded-2xl shadow-lg flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div 
+        className="border p-5 rounded-2xl shadow-lg flex flex-col md:flex-row md:items-center md:justify-between gap-4 transition-colors duration-300"
+        style={{
+          backgroundColor: 'var(--theme-card-bg, #0f172a)',
+          borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+          color: 'var(--theme-text, #f8fafc)',
+        }}
+      >
         <div className="flex items-center gap-3.5">
           <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl relative">
             <Laptop size={24} />
@@ -67,13 +74,13 @@ export default function ServerConsoleView({
             </span>
           </div>
           <div>
-            <h2 className="text-lg font-extrabold text-white tracking-tight flex items-center gap-2">
+            <h2 className="text-lg font-extrabold tracking-tight flex items-center gap-2" style={{ color: 'var(--theme-text, #f8fafc)' }}>
               Consola del Servidor Principal
               <span className="px-2 py-0.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[10px] font-mono rounded-md font-bold tracking-wider uppercase">
                 PC CENTRAL
               </span>
             </h2>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
               Sincronizando colas, base de datos IndexedDB, sintetizador de voz y música ambiental en tiempo real.
             </p>
           </div>
@@ -82,7 +89,12 @@ export default function ServerConsoleView({
         <div className="flex items-center gap-2.5 shrink-0">
           <button
             onClick={onForceManualMode}
-            className="px-4 py-2 bg-slate-800/80 hover:bg-slate-800 border border-slate-700/50 text-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+            className="px-4 py-2 border rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+            style={{
+              backgroundColor: 'var(--theme-input-bg, #020617)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              color: 'var(--theme-text, #f8fafc)',
+            }}
           >
             <LayoutGrid size={13} className="text-indigo-400" />
             <span>Ver Panel Manual</span>
@@ -98,14 +110,17 @@ export default function ServerConsoleView({
       </div>
 
       {/* Morning One-Click autonomous mode button */}
-      <div className={`border p-5 rounded-2xl shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 transition-all duration-300 ${
-        isAutonomousMode 
-          ? 'bg-gradient-to-r from-emerald-950/80 to-slate-900 border-emerald-500/40 shadow-emerald-950/20' 
-          : 'bg-gradient-to-r from-slate-900 to-indigo-950/40 border-slate-800 shadow-slate-950/40'
-      }`}>
+      <div 
+        className="border p-5 rounded-2xl shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 transition-all duration-300"
+        style={{
+          backgroundColor: 'var(--theme-card-bg, #0f172a)',
+          borderColor: isAutonomousMode ? 'rgba(16, 185, 129, 0.4)' : 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+          color: 'var(--theme-text, #f8fafc)',
+        }}
+      >
         <div className="flex items-center gap-3.5">
           <div className={`p-3 rounded-xl relative transition-colors ${
-            isAutonomousMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800/80 text-slate-400'
+            isAutonomousMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-indigo-500/10 text-indigo-400'
           }`}>
             <Play size={24} className={isAutonomousMode ? "animate-pulse" : ""} />
             {isAutonomousMode && (
@@ -116,7 +131,7 @@ export default function ServerConsoleView({
             )}
           </div>
           <div>
-            <h3 className="text-sm font-extrabold text-white tracking-tight flex items-center gap-2">
+            <h3 className="text-sm font-extrabold tracking-tight flex items-center gap-2" style={{ color: 'var(--theme-text, #f8fafc)' }}>
               Piloto Automático / Modo Autónomo Inteligente
               <span className={`px-2 py-0.5 text-[9px] font-extrabold rounded-md uppercase tracking-wider ${
                 isAutonomousMode ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400 border border-slate-700/35'
@@ -124,19 +139,26 @@ export default function ServerConsoleView({
                 {isAutonomousMode ? 'ACTIVO' : 'APAGADO'}
               </span>
             </h3>
-            <p className="text-xs text-slate-300 leading-relaxed max-w-xl">
+            <p className="text-xs leading-relaxed max-w-xl" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
               Activa este modo para automatizar el servicio: el sistema gestionará la cola solo, reproducirá música, llamará números consecutivamente y se mantendrá activo sin interacción del personal.
             </p>
           </div>
         </div>
         <div className="flex flex-col sm:flex-row items-center gap-3.5 w-full md:w-auto shrink-0">
           {isAutonomousMode && (
-            <label className="flex items-center gap-2 bg-slate-950/60 border border-slate-800 px-3 py-2 rounded-xl text-xs font-bold text-slate-300 cursor-pointer select-none">
+            <label 
+              className="flex items-center gap-2 border px-3 py-2 rounded-xl text-xs font-bold cursor-pointer select-none"
+              style={{
+                backgroundColor: 'var(--theme-input-bg, #020617)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text, #f8fafc)',
+              }}
+            >
               <input
                 type="checkbox"
                 checked={isAutoCallActive}
                 onChange={onToggleAutoCall}
-                className="rounded border-slate-700 text-emerald-600 focus:ring-emerald-500 w-4 h-4 bg-slate-900 cursor-pointer"
+                className="rounded border-slate-700 text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
               />
               <span>Auto-Llamador</span>
             </label>
@@ -162,62 +184,92 @@ export default function ServerConsoleView({
         <div className="lg:col-span-4 space-y-6">
           
           {/* Pairing Code massive card */}
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl flex flex-col items-center text-center space-y-4">
-            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-mono">
+          <div 
+            className="border p-6 rounded-2xl shadow-xl flex flex-col items-center text-center space-y-4"
+            style={{
+              backgroundColor: 'var(--theme-card-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+            }}
+          >
+            <span className="text-[10px] font-bold uppercase tracking-wider font-mono" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
               Código de Emparejamiento
             </span>
             <div className="flex items-center gap-2.5">
-              <span className="font-mono text-5xl font-black text-white tracking-widest bg-slate-950 border border-slate-800/80 px-6 py-3.5 rounded-2xl shadow-inner select-all">
+              <span 
+                className="font-mono text-5xl font-black tracking-widest border px-6 py-3.5 rounded-2xl shadow-inner select-all"
+                style={{
+                  backgroundColor: 'var(--theme-input-bg, #020617)',
+                  borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                  color: 'var(--theme-text, #ffffff)',
+                }}
+              >
                 {pairingCode || '------'}
               </span>
               <button
                 onClick={handleCopyCode}
-                className="p-3 bg-slate-950 hover:bg-slate-800 border border-slate-800/80 text-slate-300 hover:text-white rounded-xl transition-all cursor-pointer"
+                className="p-3 border rounded-xl transition-all cursor-pointer"
+                style={{
+                  backgroundColor: 'var(--theme-input-bg, #020617)',
+                  borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                  color: 'var(--theme-text, #f8fafc)',
+                }}
                 title="Copiar código"
               >
                 {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
               </button>
             </div>
-            <p className="text-xs text-slate-400 leading-relaxed max-w-xs">
+            <p className="text-xs leading-relaxed max-w-xs" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
               Introduce este código en las tablets o televisores para conectarlos de forma segura en la red Wi-Fi local.
             </p>
           </div>
 
           {/* Network Info Details */}
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl space-y-4">
+          <div 
+            className="border p-5 rounded-2xl shadow-xl space-y-4"
+            style={{
+              backgroundColor: 'var(--theme-card-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+            }}
+          >
             <h3 className="font-bold text-xs text-indigo-400 uppercase tracking-wider flex items-center gap-1.5">
               <Shield size={13} />
               Información de Red Local
             </h3>
             <div className="space-y-2.5 font-mono text-xs">
-              <div className="flex justify-between py-1 border-b border-slate-950">
-                <span className="text-slate-500">Dirección del Servidor:</span>
-                <span className="text-slate-200 font-bold">{serverIP}</span>
+              <div className="flex justify-between py-1 border-b" style={{ borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.05))' }}>
+                <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Dirección del Servidor:</span>
+                <span className="font-bold" style={{ color: 'var(--theme-text, #f8fafc)' }}>{serverIP}</span>
               </div>
-              <div className="flex justify-between py-1 border-b border-slate-950">
-                <span className="text-slate-500">Conexiones Activas:</span>
+              <div className="flex justify-between py-1 border-b" style={{ borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.05))' }}>
+                <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Conexiones Activas:</span>
                 <span className="text-indigo-400 font-bold">{connectedClients.filter(c => c.connected).length} dispositivo(s)</span>
               </div>
-              <div className="flex justify-between py-1 border-b border-slate-950">
-                <span className="text-slate-500">Seguridad del Canal:</span>
+              <div className="flex justify-between py-1 border-b" style={{ borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.05))' }}>
+                <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Seguridad del Canal:</span>
                 <span className="text-emerald-400 font-bold">WS Local Protegido</span>
               </div>
               <div className="flex justify-between py-1">
-                <span className="text-slate-500">Motor de Audio / TTS:</span>
+                <span style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Motor de Audio / TTS:</span>
                 <span className="text-amber-400 font-bold">Local en este PC</span>
               </div>
             </div>
           </div>
 
           {/* Synced Devices Status */}
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl space-y-4">
-            <h3 className="font-bold text-xs text-slate-300 uppercase tracking-wider flex items-center gap-2">
+          <div 
+            className="border p-5 rounded-2xl shadow-xl space-y-4"
+            style={{
+              backgroundColor: 'var(--theme-card-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+            }}
+          >
+            <h3 className="font-bold text-xs uppercase tracking-wider flex items-center gap-2" style={{ color: 'var(--theme-text, #f8fafc)' }}>
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
               Dispositivos Vinculados ({connectedClients.length})
             </h3>
 
             {connectedClients.length === 0 ? (
-              <div className="py-6 text-center border border-dashed border-slate-800 rounded-xl text-slate-500 text-xs">
+              <div className="py-6 text-center border border-dashed rounded-xl text-xs" style={{ borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))', color: 'var(--theme-text-muted, #94a3b8)' }}>
                 No hay dispositivos emparejados.
               </div>
             ) : (
@@ -225,14 +277,14 @@ export default function ServerConsoleView({
                 {connectedClients.map(client => {
                   const isTV = client.type === 'Pantalla Pública' || client.name.toLowerCase().includes('tv') || client.name.toLowerCase().includes('pantalla') || client.name.toLowerCase().includes('display');
                   return (
-                    <div key={client.id} className="p-3 bg-slate-950/40 border border-slate-800/60 rounded-xl flex items-center justify-between gap-3 text-xs">
+                    <div key={client.id} className="p-3 border rounded-xl flex items-center justify-between gap-3 text-xs" style={{ backgroundColor: 'var(--theme-input-bg, #020617)', borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))' }}>
                       <div className="flex items-center gap-2.5">
                         <div className={`p-1.5 rounded-lg ${client.connected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-500'}`}>
                           {isTV ? <Tv size={14} /> : <Smartphone size={14} />}
                         </div>
                         <div>
-                          <div className="font-bold text-slate-200">{client.name}</div>
-                          <div className="text-[10px] text-slate-500 font-mono">
+                          <div className="font-bold" style={{ color: 'var(--theme-text, #f8fafc)' }}>{client.name}</div>
+                          <div className="text-[10px] font-mono" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
                             {isTV ? 'Modo Pantalla Pública' : 'Modo Control de Gestión'}
                           </div>
                         </div>
@@ -258,68 +310,105 @@ export default function ServerConsoleView({
           {/* Dashboard Stats Panel */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex items-center gap-3">
+            <div 
+              className="border p-4 rounded-xl flex items-center gap-3"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
+            >
               <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
                 <Database size={16} />
               </div>
               <div>
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Ticket Activo</div>
-                <div className="font-mono text-base font-black text-white">{activeTicket ? activeTicket.number : '--'}</div>
+                <div className="text-[10px] uppercase tracking-wider font-mono" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Ticket Activo</div>
+                <div className="font-mono text-base font-black" style={{ color: 'var(--theme-text, #ffffff)' }}>{activeTicket ? activeTicket.number : '--'}</div>
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex items-center gap-3">
+            <div 
+              className="border p-4 rounded-xl flex items-center gap-3"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
+            >
               <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg">
                 <Database size={16} />
               </div>
               <div>
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">En Espera</div>
-                <div className="font-mono text-base font-black text-white">{waitingCount}</div>
+                <div className="text-[10px] uppercase tracking-wider font-mono" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>En Espera</div>
+                <div className="font-mono text-base font-black" style={{ color: 'var(--theme-text, #ffffff)' }}>{waitingCount}</div>
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex items-center gap-3">
+            <div 
+              className="border p-4 rounded-xl flex items-center gap-3"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
+            >
               <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg">
                 <Database size={16} />
               </div>
               <div>
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Pausados</div>
-                <div className="font-mono text-base font-black text-white">{pendingCount}</div>
+                <div className="text-[10px] uppercase tracking-wider font-mono" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Pausados</div>
+                <div className="font-mono text-base font-black" style={{ color: 'var(--theme-text, #ffffff)' }}>{pendingCount}</div>
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex items-center gap-3">
+            <div 
+              className="border p-4 rounded-xl flex items-center gap-3"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
+            >
               <div className="p-2 bg-rose-500/10 text-rose-400 rounded-lg">
                 <Database size={16} />
               </div>
               <div>
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Perdidos / Total</div>
-                <div className="font-mono text-base font-black text-white">{missingCount} / {tickets.length}</div>
+                <div className="text-[10px] uppercase tracking-wider font-mono" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Perdidos / Total</div>
+                <div className="font-mono text-base font-black" style={{ color: 'var(--theme-text, #ffffff)' }}>{missingCount} / {tickets.length}</div>
               </div>
             </div>
 
           </div>
 
           {/* Real-time Logs Console */}
-          <div className="bg-slate-950 border border-slate-800 rounded-2xl flex-1 flex flex-col min-h-[400px] overflow-hidden shadow-2xl">
+          <div 
+            className="border rounded-2xl flex-1 flex flex-col min-h-[400px] overflow-hidden shadow-2xl"
+            style={{
+              backgroundColor: 'var(--theme-input-bg, #020617)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+            }}
+          >
             {/* Console Header */}
-            <div className="bg-slate-900/60 px-5 py-3 border-b border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-slate-300 text-xs font-bold">
+            <div 
+              className="px-5 py-3 border-b flex items-center justify-between"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+              }}
+            >
+              <div className="flex items-center gap-2 text-xs font-bold" style={{ color: 'var(--theme-text, #f8fafc)' }}>
                 <Terminal size={14} className="text-emerald-400" />
                 <span>Consola de Sucesos del Servidor (Tiempo Real)</span>
               </div>
               <button
                 onClick={onClearLogs}
-                className="text-[10px] text-slate-500 hover:text-slate-300 underline font-semibold transition-colors"
+                className="text-[10px] underline font-semibold transition-colors cursor-pointer"
+                style={{ color: 'var(--theme-text-muted, #94a3b8)' }}
               >
                 Limpiar consola
               </button>
             </div>
 
             {/* Terminal Logs List */}
-            <div className="p-4 flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed space-y-2 h-[340px] scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+            <div className="p-4 flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed space-y-2 h-[340px] scrollbar-thin">
               {serverLogs.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-slate-600 text-center space-y-1 py-12">
+                <div className="h-full flex flex-col items-center justify-center text-center space-y-1 py-12" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>
                   <Terminal size={24} className="opacity-20 mb-2" />
                   <p>Consola vacía. Iniciando escucha de red...</p>
                   <p className="text-[10px]">Las operaciones remotas y registros del sistema aparecerán aquí al instante.</p>
@@ -333,10 +422,10 @@ export default function ServerConsoleView({
                   if (log.type === 'info') badgeColor = 'text-indigo-400';
 
                   return (
-                    <div key={log.id} className="flex gap-2.5 items-start hover:bg-slate-900/40 p-1 rounded transition-colors border-l-2 border-transparent hover:border-indigo-500/50">
-                      <span className="text-slate-600 shrink-0 select-none">[{log.timestamp}]</span>
+                    <div key={log.id} className="flex gap-2.5 items-start p-1 rounded transition-colors border-l-2 border-transparent">
+                      <span className="shrink-0 select-none" style={{ color: 'var(--theme-text-muted, #64748b)' }}>[{log.timestamp}]</span>
                       <span className={`${badgeColor} shrink-0 select-none`}>●</span>
-                      <span className="text-slate-300">{log.message}</span>
+                      <span style={{ color: 'var(--theme-text, #e2e8f0)' }}>{log.message}</span>
                     </div>
                   );
                 })
@@ -344,7 +433,14 @@ export default function ServerConsoleView({
             </div>
 
             {/* Console Footer Status */}
-            <div className="bg-slate-900/30 px-5 py-2.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+            <div 
+              className="px-5 py-2.5 border-t flex items-center justify-between text-[10px] font-mono"
+              style={{
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              }}
+            >
               <div className="flex items-center gap-1.5">
                 <Volume2 size={12} className="text-indigo-400" />
                 <span>TTS: {voiceSettings.soundEnabled ? 'ACTIVO' : 'SILENCIADO'} | Idioma: {voiceSettings.lang.toUpperCase()}</span>
