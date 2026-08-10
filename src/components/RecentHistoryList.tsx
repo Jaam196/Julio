@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Ticket } from '../types';
-import { ArrowLeft, Trash2, CheckCircle, Clock } from 'lucide-react';
+import { ArrowLeft, Trash2, CheckCircle, Clock, Tablet } from 'lucide-react';
 import { formatTimeDuration } from '../utils/export';
 
 interface RecentHistoryListProps {
@@ -99,8 +99,14 @@ export default function RecentHistoryList({
                     <span className="text-xs text-slate-300 font-mono font-bold">
                       Espera: {formatTimeDuration(ticket.totalTime || 0)}
                     </span>
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      Entregado: {ticket.completedAt ? new Date(ticket.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                    <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
+                      <span>Entregado: {ticket.completedAt ? new Date(ticket.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}</span>
+                      {ticket.createdByDevice && (
+                        <span className="ml-1 inline-flex items-center gap-1 bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 px-1 py-0.5 rounded text-[9px] font-bold">
+                          <Tablet size={8} className="text-indigo-400" />
+                          <span>{ticket.createdByDevice}</span>
+                        </span>
+                      )}
                     </span>
                   </div>
                 </div>

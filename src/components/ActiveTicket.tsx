@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Ticket } from '../types';
-import { Check, Volume2, ArrowRightLeft, Clock, AlertCircle, Trash2, Zap } from 'lucide-react';
+import { Check, Volume2, ArrowRightLeft, Clock, AlertCircle, Trash2, Zap, Tablet } from 'lucide-react';
 import { formatTimeDuration } from '../utils/export';
 import SwipeableTicket from './SwipeableTicket';
 
@@ -174,6 +174,12 @@ export default function ActiveTicket({
             <span className="text-[10px] font-display font-black tracking-widest text-violet-400 uppercase">
               TICKET ACTIVO
             </span>
+            {activeTicket.createdByDevice && (
+              <span className="inline-flex items-center gap-1 bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold">
+                <Tablet size={10} className="text-indigo-400" />
+                <span>{activeTicket.createdByDevice}</span>
+              </span>
+            )}
           </div>
           <div 
             className="flex items-center gap-1.5 border px-3 py-1 rounded-xl text-[10px] font-mono font-bold"

@@ -11,6 +11,7 @@ export interface Ticket {
   deliveredAt?: number;
   deletedAt?: number;
   isPriority?: boolean;
+  createdByDevice?: string;
 }
 
 export type PhraseTypeEs = 

@@ -642,6 +642,33 @@ async function startServer() {
     res.json({ rooms: list });
   });
 
+  app.get("/api/rooms/state/:roomCode?", (req, res) => {
+    const requestedCode = (req.params.roomCode || "").trim().toUpperCase();
+    let room: Room | undefined = undefined;
+
+    if (requestedCode) {
+      room = rooms.get(requestedCode);
+    }
+
+    // Fallback: If room not found or no code provided, auto-select the active room if available
+    if (!room && rooms.size > 0) {
+      room = Array.from(rooms.values())[0];
+    }
+
+    if (!room) {
+      return res.status(404).json({ success: false, error: "No active room found on server", roomsCount: rooms.size });
+    }
+
+    res.json({
+      success: true,
+      code: room.code,
+      serverName: room.serverName || "PC Servidor Principal",
+      hasState: !!room.lastState,
+      state: room.lastState || null,
+      timestamp: Date.now()
+    });
+  });
+
   app.get("/api/youtube/search", async (req, res) => {
     const query = (req.query.query as string) || "";
     const continuation = (req.query.continuation as string) || "";
@@ -924,6 +951,10 @@ async function startServer() {
             clientId = deviceId;
 
             // Auto-authorize TV screens and clients matching room code for seamless active connection
+            const existingSocket = room.clientSockets.get(deviceId);
+            if (existingSocket && existingSocket !== socket) {
+              try { existingSocket.close(); } catch (e) {}
+            }
             room.clientSockets.set(deviceId, socket);
             room.clientMetadata.set(deviceId, { id: deviceId, name: deviceName, type: deviceType || "Tablet" });
 

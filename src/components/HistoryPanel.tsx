@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Ticket } from '../types';
-import { Search, Calendar, Trash2, FileText, Download, CheckCircle, HelpCircle, RefreshCw, Clock, ArrowLeft, AlertCircle } from 'lucide-react';
+import { Search, Calendar, Trash2, FileText, Download, CheckCircle, HelpCircle, RefreshCw, Clock, ArrowLeft, AlertCircle, Tablet } from 'lucide-react';
 import { exportToPDF, exportToExcel, formatDate, formatTimeDuration } from '../utils/export';
 
 interface HistoryPanelProps {
@@ -260,6 +260,12 @@ export default function HistoryPanel({ tickets, onDeleteTicket, onClearHistory, 
                         {item.completedAt && (
                           <span className="text-[10px] text-slate-500 font-mono">
                             Salida: {formatDate(item.completedAt)}
+                          </span>
+                        )}
+                        {item.createdByDevice && (
+                          <span className="text-[10px] text-indigo-300 font-mono flex items-center gap-1">
+                            <Tablet size={9} className="text-indigo-400" />
+                            <span>Dispositivo: {item.createdByDevice}</span>
                           </span>
                         )}
                       </>

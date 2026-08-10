@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Ticket } from '../types';
-import { Check, Volume2, ArrowRightLeft, Trash2, Clock, Info } from 'lucide-react';
+import { Check, Volume2, ArrowRightLeft, Trash2, Clock, Info, Tablet } from 'lucide-react';
 import { formatTimeDuration } from '../utils/export';
 import SwipeableTicket from './SwipeableTicket';
 
@@ -169,8 +169,14 @@ export default function ReadyList({
                           <Clock size={12} className="text-emerald-400 animate-pulse" />
                           <span>Listo hace: {formatTimeDuration(elapsedReadySeconds)}</span>
                         </span>
-                        <span className="text-[10px] text-slate-500 font-mono font-medium">
-                          Creado: {new Date(ticket.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        <span className="text-[10px] text-slate-500 font-mono font-medium flex items-center gap-1">
+                          <span>Creado: {new Date(ticket.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                          {ticket.createdByDevice && (
+                            <span className="ml-1 inline-flex items-center gap-1 bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 px-1.5 py-0.5 rounded text-[9px] font-bold">
+                              <Tablet size={9} className="text-indigo-400" />
+                              <span>{ticket.createdByDevice}</span>
+                            </span>
+                          )}
                         </span>
                       </div>
                     </div>

@@ -72,6 +72,10 @@ export default function DevicesPanel({
     setInputIP(serverIP);
   }, [serverIP]);
 
+  useEffect(() => {
+    setInputName(deviceName);
+  }, [deviceName]);
+
   const handleCopyCode = () => {
     navigator.clipboard.writeText(pairingCode);
     setCopied(true);
@@ -117,6 +121,44 @@ export default function DevicesPanel({
         <div>
           <h3 className="font-semibold text-slate-100 text-lg">Sincronización Multidispositivo</h3>
           <p className="text-xs text-slate-400">Conecta pantallas secundarias y mandos de control remoto inalámbricos.</p>
+        </div>
+      </div>
+
+      {/* Device Name Configuration Card - ALWAYS VISIBLE & EDITABLE */}
+      <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 font-sans">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-indigo-500/10 text-indigo-400 rounded-xl shrink-0">
+            <Smartphone size={20} />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-slate-100 flex items-center gap-2 flex-wrap">
+              <span>Nombre de este Dispositivo</span>
+              <span className="text-[10px] font-mono font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-800/60 px-2 py-0.5 rounded-md">
+                {deviceName || 'Sin nombre'}
+              </span>
+            </h4>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Este nombre se asociará a los tickets creados en este modo (Tablet / Mando / PC).
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 sm:w-80">
+          <input
+            type="text"
+            value={inputName}
+            onChange={(e) => setInputName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSaveDeviceName();
+            }}
+            placeholder="Ej: Tablet Mostrador 1"
+            className="flex-1 bg-slate-900 border border-slate-700 focus:border-indigo-500 text-white text-xs rounded-xl px-3 py-2 outline-none font-medium"
+          />
+          <button
+            onClick={handleSaveDeviceName}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 shadow-sm"
+          >
+            Guardar
+          </button>
         </div>
       </div>
 

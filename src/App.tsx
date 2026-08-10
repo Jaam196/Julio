@@ -28,6 +28,7 @@ import BackgroundMusicPlayer from './components/BackgroundMusicPlayer';
 import DevicesPanel from './components/DevicesPanel';
 import PublicDisplayView from './components/PublicDisplayView';
 import ServerConsoleView from './components/ServerConsoleView';
+import TabletDashboardView from './components/TabletDashboardView';
 
 import { LayoutGrid, Camera, History, BarChart2, Settings as SettingsIcon, AlertCircle, Volume2, Keyboard, Play, Check, Trash2, ArrowRightLeft, Smartphone, Tablet, Monitor, Tv, Activity, Wifi, Music, Radio, Brain, Sparkles, Maximize, Minimize, X, Zap, Megaphone, Search, Pause, RotateCcw } from 'lucide-react';
 import { matchesShortcut, shouldProcessShortcut, SHORTCUT_NAMES } from './utils/shortcutHelper';
@@ -131,7 +132,39 @@ export default function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
   const [announcementCount, setAnnouncementCount] = useState<number>(0);
-  const [activeTab, setActiveTab] = useState<'board' | 'ocr' | 'history' | 'stats' | 'settings' | 'devices' | 'tv_view'>('board');
+  const [activeTab, setActiveTab] = useState<'board' | 'tablet' | 'ocr' | 'history' | 'stats' | 'settings' | 'devices' | 'tv_view'>(() => {
+    if (typeof window === 'undefined') return 'board';
+    const devType = window.innerWidth < 768 ? 'mobile' : window.innerWidth < 1024 ? 'tablet' : 'pc';
+    const validTabs = ['board', 'tablet', 'ocr', 'history', 'stats', 'settings', 'devices', 'tv_view'];
+    
+    // 1. Check general saved active mode directly chosen by user
+    const saved = localStorage.getItem('activeTab');
+    if (saved && validTabs.includes(saved)) {
+      return saved as any;
+    }
+
+    // 2. Check device-specific saved mode
+    const savedForDevice = localStorage.getItem(`activeTab_${devType}`);
+    if (savedForDevice && validTabs.includes(savedForDevice)) {
+      return savedForDevice as any;
+    }
+
+    // 3. Default based on screen type
+    if (devType === 'tablet' || devType === 'mobile') {
+      return 'tablet';
+    }
+    return 'board';
+  });
+
+  // Automatically remember active mode for the current device whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && activeTab) {
+      localStorage.setItem('activeTab', activeTab);
+      if (deviceType) {
+        localStorage.setItem(`activeTab_${deviceType}`, activeTab);
+      }
+    }
+  }, [activeTab, deviceType]);
   const [boardSubTab, setBoardSubTab] = useState<'all' | 'control' | 'waiting' | 'ready' | 'missing' | 'recent'>('all');
   const [isDBReady, setIsDBReady] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -177,7 +210,7 @@ export default function App() {
   const urlMode = searchParams?.get('mode');
   const urlRole = searchParams?.get('role');
   const urlCode = searchParams?.get('code');
-  const isTvUA = typeof navigator !== 'undefined' && /Tizen|SmartTV|SamsungBrowser|HbbTV|WebOS/i.test(navigator.userAgent);
+  const isTvUA = typeof navigator !== 'undefined' && /Tizen|SmartTV|SMART-TV|SamsungBrowser|HbbTV|WebOS|webOS|NetCast|BRAVIA|MiTV|AFTB|FireTV|Vidaa|Hisense|Large Screen|CrKey/i.test(navigator.userAgent);
 
   // Client-Server and WebSocket states
   const [deviceMode, setDeviceMode] = useState<'local' | 'server' | 'client'>(() => {
@@ -235,6 +268,7 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<any>(null);
   const lastMessageReceivedTimeRef = useRef<number>(Date.now());
+  const connectionStartTimeRef = useRef<number>(0);
   const syncVersionRef = useRef<number>(1);
 
   // Initial theme application and listener on boot
@@ -650,6 +684,7 @@ export default function App() {
 
   // Client-Server actions and WebSocket management
   const connectWebSocket = (mode: 'server' | 'client', code: string, ip: string, isManual = false) => {
+    connectionStartTimeRef.current = Date.now();
     if (socketRef.current) {
       const isSameHost = socketRef.current.url.includes(ip);
       if (!isManual && isSameHost && (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING)) {
@@ -762,7 +797,15 @@ export default function App() {
           localStorage.setItem('serverIP', ip);
           setLastConnectionError('');
           if (clientRole === 'controller') {
-            setActiveTab('board');
+            setActiveTab(prevTab => {
+              if (prevTab === 'devices') {
+                const saved = localStorage.getItem('activeTab');
+                return (saved && saved !== 'devices' && ['board', 'tablet', 'ocr', 'history', 'stats', 'settings', 'devices', 'tv_view'].includes(saved)) 
+                  ? (saved as any) 
+                  : 'board';
+              }
+              return prevTab;
+            });
           }
         }
 
@@ -773,6 +816,12 @@ export default function App() {
           if (mode === 'server') {
             addServerLog(`Error de vinculación: ${data.reason}`, 'error');
           } else {
+            const isTvScreen = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
+            if (isTvScreen || mode === 'client') {
+              console.log('[Auto-Reconnect] Pairing failed. Clearing stale code to trigger room auto-discovery...');
+              localStorage.removeItem('pairedCode');
+              setPairingCode('');
+            }
             try {
               ws.close();
             } catch (e) {}
@@ -1011,7 +1060,7 @@ export default function App() {
               addServerLog(`Comando [${actionName}] recibido de "${clientName}" y ejecutado.`, 'info');
             }
             if (handleRemoteActionRef.current) {
-              handleRemoteActionRef.current(data.action, data.payload, data.deviceId);
+              handleRemoteActionRef.current(data.action, data.payload, data.deviceId, data.deviceName);
             }
           }
         }
@@ -1038,13 +1087,18 @@ export default function App() {
       
       // Auto reconnect with continuous 1-second frequency for screens & clients
       reconnectAttemptsRef.current += 1;
-      const isClientOrTVMode = mode === 'client' || clientRole === 'pantalla' || activeTab === 'tv_view';
+      const isTvScreen = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
+      const isClientOrTVMode = mode === 'client' || isTvScreen;
       const nextDelay = isClientOrTVMode ? 1000 : Math.min(reconnectAttemptsRef.current * 1000, 5000);
 
       console.log(`[WS Reconnect] Lost connection. Reconnecting in ${nextDelay / 1000}s (Attempt ${reconnectAttemptsRef.current})...`);
 
       reconnectTimeoutRef.current = setTimeout(() => {
-        const m = localStorage.getItem('deviceMode') || (activeTab === 'tv_view' ? 'client' : 'local');
+        let m = localStorage.getItem('deviceMode') || (isClientOrTVMode ? 'client' : 'local');
+        if (isClientOrTVMode) {
+          m = 'client';
+          localStorage.setItem('deviceMode', 'client');
+        }
         if (m && m !== 'local') {
           const c = localStorage.getItem('pairedCode') || pairingCode || '';
           const i = localStorage.getItem('serverIP') || serverIP || window.location.host;
@@ -1122,7 +1176,7 @@ export default function App() {
     }
   };
 
-  const handleRemoteAction = (action: string, payload: any, deviceId?: string) => {
+  const handleRemoteAction = (action: string, payload: any, deviceId?: string, clientName?: string) => {
     console.log(`Executing remote client action: ${action}`, payload);
     switch (action) {
       case 'request_media':
@@ -1131,7 +1185,13 @@ export default function App() {
         }
         break;
       case 'add_ticket':
-        handleAddTicket(payload.number, payload.fromOcr);
+        handleAddTicket(payload.number, payload.fromOcr, payload.createdByDevice || clientName);
+        break;
+      case 'add_direct_waiting':
+        handleAddDirectWaitingTicket(payload.number, payload.createdByDevice || clientName);
+        break;
+      case 'add_direct_pending':
+        handleAddDirectPendingTicket(payload.number, payload.createdByDevice || clientName);
         break;
       case 'mark_delivered':
         handleMarkDelivered(payload.id);
@@ -1297,8 +1357,27 @@ export default function App() {
   };
 
   const handleSetDeviceName = (name: string) => {
-    setDeviceName(name);
-    localStorage.setItem('deviceName', name);
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setDeviceName(trimmed);
+    localStorage.setItem('deviceName', trimmed);
+    deviceNameRef.current = trimmed;
+    triggerConfigSavedToast(`✔ Dispositivo renombrado como: "${trimmed}"`);
+
+    // Sync with WS Server if connected as a client
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && deviceMode === 'client') {
+      try {
+        socketRef.current.send(JSON.stringify({
+          type: 'register_client',
+          code: pairingCode,
+          deviceId: getOrCreateDeviceId(),
+          deviceName: trimmed,
+          deviceType: clientRole === 'pantalla' ? 'Pantalla Pública' : 'Cliente de Control',
+        }));
+      } catch (err) {
+        console.error('Error updating device name on WS server:', err);
+      }
+    }
   };
 
   const handleSetServerIP = (ip: string) => {
@@ -1413,17 +1492,17 @@ export default function App() {
   // Bulletproof 1-Second Continuous Monitoring & Auto-Reconnect Engine for TV Screens & Clients
   useEffect(() => {
     const checkAndReconnect1s = async () => {
+      const isTvScreen = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
       let currentMode = localStorage.getItem('deviceMode') as 'server' | 'client' | 'local' | null;
-      if (!currentMode) {
-        currentMode = deviceMode;
-      }
 
-      // Enforce client mode only when explicitly in client mode with pantalla role
-      if (currentMode === 'client' && clientRole === 'pantalla') {
+      if (isTvScreen) {
+        currentMode = 'client';
         if (deviceMode !== 'client') {
           setDeviceMode('client');
-          localStorage.setItem('deviceMode', 'client');
         }
+        localStorage.setItem('deviceMode', 'client');
+      } else if (!currentMode) {
+        currentMode = deviceMode;
       }
 
       if (!currentMode || currentMode === 'local') return;
@@ -1431,11 +1510,11 @@ export default function App() {
       const socket = socketRef.current;
       const isSocketOpen = socket && socket.readyState === WebSocket.OPEN;
 
-      // 1. Check for stale / half-open socket (if open but no message received in 20s)
+      // 1. Check for stale / half-open socket (if open but no message received in 25s)
       if (isSocketOpen) {
         const idleTime = Date.now() - lastMessageReceivedTimeRef.current;
-        if (idleTime > 20000) {
-          console.warn('[1s Monitor] Heartbeat timeout (no message in 20s). Force closing stale socket...');
+        if (idleTime > 25000) {
+          console.warn('[1s Monitor] Heartbeat timeout (no message in 25s). Force closing stale socket...');
           try {
             socket.close();
           } catch (e) {}
@@ -1443,11 +1522,11 @@ export default function App() {
         return; // Connected and healthy!
       }
 
-      // 2. If socket is connecting, check if stuck for > 4s
+      // 2. If socket is connecting, check if stuck for > 8s
       if (socket && socket.readyState === WebSocket.CONNECTING) {
-        const connectingTime = Date.now() - lastMessageReceivedTimeRef.current;
-        if (connectingTime > 4000) {
-          console.warn('[1s Monitor] Connection attempt stuck in CONNECTING for >4s. Resetting...');
+        const connectingTime = Date.now() - connectionStartTimeRef.current;
+        if (connectingTime > 8000) {
+          console.warn('[1s Monitor] Connection attempt stuck in CONNECTING for >8s. Resetting...');
           try {
             socket.close();
           } catch (e) {}
@@ -1507,6 +1586,125 @@ export default function App() {
       window.removeEventListener('visibilitychange', handleInstantReconnect);
       window.removeEventListener('focus', handleInstantReconnect);
       window.removeEventListener('online', handleInstantReconnect);
+    };
+  }, [deviceMode, clientRole, activeTab, pairingCode, serverIP]);
+
+  // Screen WakeLock for Smart TVs & Public Display Screens
+  useEffect(() => {
+    let wakeLock: any = null;
+    const requestWake = async () => {
+      try {
+        if ('wakeLock' in navigator && (navigator as any).wakeLock?.request) {
+          wakeLock = await (navigator as any).wakeLock.request('screen');
+          console.log('[TV Screen Engine] Screen WakeLock acquired successfully.');
+        }
+      } catch (err) {
+        // Wake lock failed or unsupported
+      }
+    };
+
+    requestWake();
+    const handleReWake = () => {
+      if (document.visibilityState === 'visible') {
+        requestWake();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleReWake);
+    return () => {
+      document.removeEventListener('visibilitychange', handleReWake);
+      if (wakeLock) {
+        try { wakeLock.release(); } catch (e) {}
+      }
+    };
+  }, []);
+
+  // Continuous Dual-Engine HTTP REST Sync for TV Screens and Clients
+  // Acts as a secondary bulletproof sync layer alongside WebSockets
+  useEffect(() => {
+    let syncInterval: any = null;
+
+    const performHttpSync = async () => {
+      const isTvScreen = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
+      let currentMode = localStorage.getItem('deviceMode') as 'server' | 'client' | 'local' | null;
+      if (isTvScreen) {
+        currentMode = 'client';
+      } else if (!currentMode) {
+        currentMode = deviceMode;
+      }
+
+      if (currentMode !== 'client') return;
+
+      const ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
+      const code = localStorage.getItem('pairedCode') || pairingCode || '';
+
+      try {
+        const syncUrl = buildApiUrl(ip, `/api/rooms/state/${encodeURIComponent(code)}`);
+        const res = await fetch(syncUrl, { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.state) {
+            const st = data.state;
+
+            // Auto adopt valid active room code if missing
+            if (data.code && (!pairingCode || pairingCode !== data.code)) {
+              setPairingCode(data.code);
+              localStorage.setItem('pairedCode', data.code);
+            }
+
+            const prevActiveId = activeTicketRef.current?.id;
+            const newActive = st.activeTicket;
+
+            // Apply state synchronization
+            if (st.tickets) setTickets(st.tickets);
+            if (newActive !== undefined) setActiveTicket(newActive);
+            if (st.announcementCount !== undefined) setAnnouncementCount(st.announcementCount);
+            if (st.appConfig) setAppConfig(st.appConfig);
+            if (st.voiceSettings) setVoiceSettings(st.voiceSettings);
+            if (st.musicConfig) setMusicConfig(st.musicConfig);
+            if (st.isWaitlistPaused !== undefined) setIsWaitlistPaused(st.isWaitlistPaused);
+
+            setPairingStatus('paired');
+            setLastSyncTime(new Date().toLocaleTimeString());
+
+            // Trigger chime and voice announcement if active ticket changed
+            if (newActive && newActive.id !== prevActiveId) {
+              console.log('[HTTP Sync Engine] New active ticket detected via HTTP REST fallback:', newActive.number);
+              const vs = st.voiceSettings || voiceSettingsRef.current;
+              if (vs.soundEnabled !== false) {
+                playNotificationSound();
+              }
+              if (vs.voiceEnabled !== false) {
+                const msgText = formatAnnouncementText(newActive.number, vs, st.announcementCount || 1);
+                speakText(msgText, vs);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // Silent fail; next iteration or WebSocket will handle
+      }
+    };
+
+    const isTvScreen = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
+    const pollIntervalMs = isTvScreen ? 2000 : 3000;
+
+    performHttpSync();
+    syncInterval = setInterval(performHttpSync, pollIntervalMs);
+
+    const handleWakeSync = () => {
+      performHttpSync();
+    };
+
+    window.addEventListener('visibilitychange', handleWakeSync);
+    window.addEventListener('focus', handleWakeSync);
+    window.addEventListener('online', handleWakeSync);
+
+    return () => {
+      if (syncInterval) clearInterval(syncInterval);
+      window.removeEventListener('visibilitychange', handleWakeSync);
+      window.removeEventListener('focus', handleWakeSync);
+      window.removeEventListener('online', handleWakeSync);
     };
   }, [deviceMode, clientRole, activeTab, pairingCode, serverIP]);
 
@@ -2107,8 +2305,9 @@ export default function App() {
   }, []);
 
   // 5. Ticket Actions Operations
-  const handleAddTicket = async (number: string, fromOcr = false) => {
-    if (sendClientAction('add_ticket', { number, fromOcr })) return;
+  const handleAddTicket = async (number: string, fromOcr = false, createdByDevice?: string) => {
+    const creator = createdByDevice || deviceName || 'Tablet';
+    if (sendClientAction('add_ticket', { number, fromOcr, createdByDevice: creator })) return;
     // 3-digit normalization helper
     const normalizedNum = String(parseInt(number, 10));
 
@@ -2133,13 +2332,14 @@ export default function App() {
         number: normalizedNum,
         createdAt: Date.now(),
         status: 'waiting',
+        createdByDevice: creator,
       };
       const updatedTickets = [...tickets, newTicket];
       setTickets(updatedTickets);
       await dbSaveTicket(newTicket);
-      triggerConfigSavedToast(`✔ Ticket #${normalizedNum} añadido a Espera`);
+      triggerConfigSavedToast(`✔ Ticket #${normalizedNum} añadido a Espera (${creator})`);
       if (deviceMode === 'server') {
-        addServerLog(`Ticket #${normalizedNum} (OCR) -> Espera.`, 'info');
+        addServerLog(`Ticket #${normalizedNum} (OCR) -> Espera [${creator}].`, 'info');
       }
       forceRefocusInput();
       return;
@@ -2152,6 +2352,7 @@ export default function App() {
       createdAt: Date.now(),
       completedAt: Date.now(),
       status: 'active',
+      createdByDevice: creator,
     };
 
     const updatedTickets = [...tickets, newTicket];
@@ -2384,8 +2585,9 @@ export default function App() {
     forceRefocusInput();
   };
 
-  const handleAddDirectWaitingTicket = async (number: string) => {
-    if (sendClientAction('add_direct_waiting', { number })) return;
+  const handleAddDirectWaitingTicket = async (number: string, createdByDevice?: string) => {
+    const creator = createdByDevice || deviceName || 'Tablet';
+    if (sendClientAction('add_direct_waiting', { number, createdByDevice: creator })) return;
     const normalizedNum = String(parseInt(number, 10));
 
     // Guard: check for active or waiting duplicates
@@ -2402,6 +2604,7 @@ export default function App() {
       number: normalizedNum,
       createdAt: Date.now(),
       status: 'waiting',
+      createdByDevice: creator,
     };
 
     const updatedTickets = [...tickets, newTicket];
@@ -2410,8 +2613,9 @@ export default function App() {
     forceRefocusInput();
   };
 
-  const handleAddDirectPendingTicket = async (number: string) => {
-    if (sendClientAction('add_direct_pending', { number })) return;
+  const handleAddDirectPendingTicket = async (number: string, createdByDevice?: string) => {
+    const creator = createdByDevice || deviceName || 'Tablet';
+    if (sendClientAction('add_direct_pending', { number, createdByDevice: creator })) return;
     const normalizedNum = String(parseInt(number, 10));
 
     // Guard: check for duplicate in pending status
@@ -2429,6 +2633,7 @@ export default function App() {
       createdAt: Date.now(),
       pendingAt: Date.now(),
       status: 'pending',
+      createdByDevice: creator,
     };
 
     const updatedTickets = [...tickets, newTicket];
@@ -3292,7 +3497,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 overflow-x-auto scrollbar-none">
           <div className="flex items-center gap-1.5">
             <button
-              onClick={() => setActiveTab('board')}
+              onClick={() => { setActiveTab('board'); localStorage.setItem('activeTab', 'board'); }}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
                 activeTab === 'board' 
                   ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/20' 
@@ -3305,7 +3510,24 @@ export default function App() {
               } : {}}
             >
               <LayoutGrid size={14} />
-              <span>Panel</span>
+              <span>Panel (PC)</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('tablet'); localStorage.setItem('activeTab', 'tablet'); }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                activeTab === 'tablet' 
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/20' 
+                  : 'hover:brightness-110'
+              }`}
+              style={activeTab !== 'tablet' ? {
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              } : {}}
+            >
+              <Tablet size={14} />
+              <span>Modo Tablet</span>
             </button>
 
             <button
@@ -3403,6 +3625,49 @@ export default function App() {
         ) : (
           <div className="h-full">
             
+            {/* VISTA 0: MODO TABLET TÁCTIL CON ESCÁNER OCR INTEGRADO Y DISPENSADOR NUMÉRICO */}
+            {activeTab === 'tablet' && (
+              <TabletDashboardView
+                tickets={tickets}
+                activeTicket={activeTicket}
+                onCallNext={handleCallNext}
+                onAddTicket={handleAddTicket}
+                onResolveTicket={handleMarkDelivered}
+                onMarkMissing={handleMarkMissing}
+                onRepeatCall={handleRepeatCall}
+                onClearQueue={handleClearQueue}
+                onDeliverTicket={handleMarkDelivered}
+                onCallTicketNow={handleCallTicketNow}
+                onReturnToWaiting={handleReturnToWaiting}
+                onDeleteTicket={handleDeleteTicket}
+                onTogglePriority={handleTogglePriority}
+                selectedReadyTicketId={selectedReadyTicketId}
+                onSelectReadyTicket={setSelectedReadyTicketId}
+                selectedWaitingTicketId={selectedWaitingTicketId}
+                onSelectWaitingTicket={setSelectedWaitingTicketId}
+                isWaitlistPaused={isWaitlistPaused}
+                onTogglePauseWaitlist={handleToggleWaitlistPause}
+                isAutoCallActive={isAutonomousMode}
+                onToggleAutoCall={handleToggleAutonomousMode}
+                appConfig={appConfig}
+                voiceSettings={voiceSettings}
+                musicConfig={musicConfig}
+                activeTab={activeTab}
+                setActiveTab={(tab) => {
+                  setActiveTab(tab);
+                  localStorage.setItem('activeTab', tab);
+                }}
+                pairingCode={pairingCode}
+                pairingStatus={pairingStatus}
+                isOcrPaused={isOcrPaused}
+                setIsOcrPaused={setIsOcrPaused}
+                onOpenMusicModal={() => setIsMusicModalOpen(true)}
+                onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+                setDeviceMode={setDeviceMode}
+                deviceMode={deviceMode}
+              />
+            )}
+
             {/* VISTA 1: PANEL PRINCIPAL COMPACTO DE 3 COLUMNAS CON BARRA DE HERRAMIENTAS RÁPIDAS */}
             {activeTab === 'board' && (
               <div className="space-y-4">
@@ -4146,6 +4411,27 @@ export default function App() {
           >
             <LayoutGrid size={18} />
             <span className="text-[10px] mt-0.5">Tablero</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('tablet')}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl min-h-[44px] min-w-[56px] transition-all cursor-pointer border ${
+              activeTab === 'tablet'
+                ? 'font-extrabold shadow-sm'
+                : 'hover:opacity-80'
+            }`}
+            style={activeTab === 'tablet' ? {
+              backgroundColor: 'var(--theme-input-bg, #0f172a)',
+              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.2))',
+              color: 'var(--theme-primary, #6366f1)',
+            } : {
+              backgroundColor: 'transparent',
+              borderColor: 'transparent',
+              color: 'var(--theme-text-muted, #94a3b8)',
+            }}
+          >
+            <Tablet size={18} />
+            <span className="text-[10px] mt-0.5">Tablet</span>
           </button>
 
           <button

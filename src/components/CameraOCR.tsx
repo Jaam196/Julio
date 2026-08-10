@@ -25,10 +25,19 @@ import {
   Edit3,
   XCircle,
   Maximize2,
-  Bot
+  Bot,
+  Smartphone,
+  Monitor,
+  Search,
+  StopCircle
 } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { dbSaveSettings, dbGetSettings } from '../utils/db';
+import {
+  requestScreenCaptureStream,
+  computeFrameDifference,
+  isAndroidNativeApp
+} from '../utils/androidBridge';
 
 export interface OCRSample {
   id: string;
@@ -367,6 +376,17 @@ export default function CameraOCR({
   // For testing/mocking in preview environments without real webcams or physical tickets
   const [useSimulator, setUseSimulator] = useState(false);
   const [simulatorImage, setSimulatorImage] = useState<string | null>(null);
+
+  // Source selector: 'camera' | 'screen' | 'simulator'
+  const [ocrSource, setOcrSource] = useState<'camera' | 'screen' | 'simulator'>('camera');
+
+  // Screen capture & MediaProjection state
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [screenStatus, setScreenStatus] = useState<'idle' | 'requesting' | 'active' | 'paused' | 'denied' | 'stopped'>('idle');
+  const [screenStatusMessage, setScreenStatusMessage] = useState<string>('');
+  const [screenScanSubState, setScreenScanSubState] = useState<'escaneando' | 'detectado' | 'buscando'>('escaneando');
+  const prevDiffCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastScreenFrameCheckTimeRef = useRef<number>(0);
 
   // Printer profiles & training state
   const [profiles, setProfiles] = useState<PrinterProfile[]>(DEFAULT_PROFILES);
@@ -738,6 +758,79 @@ export default function CameraOCR({
     addLog('Cámara apagada.');
   };
 
+  // Start Screen Capture Stream (MediaProjection / getDisplayMedia)
+  const startScreenCapture = async () => {
+    try {
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        setStream(null);
+      }
+      setOcrSource('screen');
+      setUseSimulator(false);
+      setScreenStatus('requesting');
+      setScreenStatusMessage('Solicitando permiso de captura de pantalla MediaProjection...');
+      addLog('Iniciando captura de pantalla (LEER OTRA APP)...');
+
+      // Native Android Bridge listener if running inside Android WebView
+      if (typeof window !== 'undefined' && window.AndroidBridge) {
+        window.onAndroidScreenCapturePermissionGranted = () => {
+          setScreenStatus('active');
+          setIsCameraActive(true);
+          setIsOcrPaused(false);
+          setScreenScanSubState('escaneando');
+          addLog('🟢 Permiso concedido en Android. Escaneando pantalla en segundo plano.');
+        };
+        window.onAndroidScreenCapturePermissionDenied = (reason) => {
+          setScreenStatus('denied');
+          setScreenStatusMessage(reason || 'Permiso denegado.');
+          addLog('🔴 Permiso de captura denegado por el usuario.');
+        };
+        window.AndroidBridge.requestScreenCapturePermission();
+        return;
+      }
+
+      // Standard Web getDisplayMedia API
+      const screenMediaStream = await requestScreenCaptureStream();
+      setScreenStream(screenMediaStream);
+      setStream(screenMediaStream);
+      setIsCameraActive(true);
+      setIsOcrPaused(false);
+      setScreenStatus('active');
+      setScreenScanSubState('escaneando');
+      addLog('🟢 Captura de pantalla activa. Leyendo la pantalla de otra aplicación...');
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = screenMediaStream;
+        videoRef.current.play().catch(e => console.warn(e));
+      }
+
+      // Automatically stop if user closes screen sharing floating bar
+      screenMediaStream.getVideoTracks()[0].onended = () => {
+        stopScreenCapture();
+      };
+    } catch (err: any) {
+      console.warn('Screen capture failed:', err);
+      setScreenStatus('denied');
+      setScreenStatusMessage(err.message || 'Permiso de captura denegado.');
+      addLog(`🔴 Error en captura de pantalla: ${err.message || 'Permiso denegado'}`);
+    }
+  };
+
+  // Stop Screen Capture
+  const stopScreenCapture = () => {
+    if (screenStream) {
+      screenStream.getTracks().forEach((track) => track.stop());
+    }
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      setStream(null);
+    }
+    setScreenStream(null);
+    setScreenStatus('stopped');
+    setScreenScanSubState('escaneando');
+    addLog('Captura de pantalla detenida.');
+  };
+
   // Toggle Torch/Flashlight
   const toggleTorch = async () => {
     if (!stream) return;
@@ -834,6 +927,44 @@ export default function CameraOCR({
     }
 
     if (!imageSrc || width === 0 || height === 0) return;
+
+    // Smart Screen Change Detection Optimization:
+    // Avoid running heavy OCR if screen image hasn't changed in Screen Capture mode
+    if (ocrSource === 'screen') {
+      try {
+        const diffW = 160;
+        const diffH = 120;
+        let diffCanvas = prevDiffCanvasRef.current;
+        if (!diffCanvas) {
+          diffCanvas = document.createElement('canvas');
+          diffCanvas.width = diffW;
+          diffCanvas.height = diffH;
+          prevDiffCanvasRef.current = diffCanvas;
+        }
+        
+        const scratchCanvas = document.createElement('canvas');
+        scratchCanvas.width = diffW;
+        scratchCanvas.height = diffH;
+        const scratchCtx = scratchCanvas.getContext('2d');
+        const prevCtx = diffCanvas.getContext('2d');
+
+        if (scratchCtx && prevCtx) {
+          scratchCtx.drawImage(imageSrc, 0, 0, diffW, diffH);
+          const diffPct = computeFrameDifference(scratchCtx, prevCtx, diffW, diffH);
+          
+          // Copy current frame to prev frame storage for next comparison
+          prevCtx.drawImage(scratchCanvas, 0, 0);
+
+          // If frame hasn't changed (< 1.2% difference) and we already have a detected ticket, skip expensive OCR
+          if (diffPct < 1.2 && recognizedTickets.length > 0) {
+            setScreenScanSubState('buscando');
+            return; // Skip OCR
+          }
+        }
+      } catch (err) {
+        // Fallback to normal OCR if diff check fails
+      }
+    }
 
     setIsProcessingFrame(true);
     const startTime = Date.now();
@@ -1542,15 +1673,16 @@ export default function CameraOCR({
             <span>Ajustes</span>
           </button>
 
-          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 gap-0.5">
             <button
               onClick={() => {
+                setOcrSource('camera');
                 setUseSimulator(false);
-                if (isCameraActive) stopCamera();
-                setTimeout(() => startCamera(), 100);
+                if (screenStream) stopScreenCapture();
+                if (!isCameraActive) startCamera();
               }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                !useSimulator ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                ocrSource === 'camera' && !useSimulator ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Camera size={14} />
@@ -1558,10 +1690,27 @@ export default function CameraOCR({
             </button>
             <button
               onClick={() => {
+                setOcrSource('screen');
+                setUseSimulator(false);
+                if (!screenStream && screenStatus !== 'active') {
+                  startScreenCapture();
+                }
+              }}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                ocrSource === 'screen' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Smartphone size={14} />
+              Otra App
+            </button>
+            <button
+              onClick={() => {
+                setOcrSource('simulator');
                 setUseSimulator(true);
+                if (screenStream) stopScreenCapture();
                 if (isCameraActive) stopCamera();
               }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
                 useSimulator ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
@@ -1573,23 +1722,74 @@ export default function CameraOCR({
       </div>
 
       {/* Real-time Status Indicators Bar */}
-      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 mb-3 flex items-center justify-between text-xs font-mono">
-        <div className="flex items-center gap-2.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
-          <div>
-            <span className="text-emerald-400 font-bold block text-sm">🟢 OCR ACTIVO</span>
-            <span className="text-slate-400 text-[10px]">
-              {isProcessingFrame ? 'Detectando...' : 'Escaneando tickets...'}
+      {ocrSource === 'screen' ? (
+        <div className="bg-emerald-950/60 border border-emerald-500/40 rounded-xl p-3 mb-3 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+          <div className="flex items-center gap-2.5">
+            <span className={`w-3 h-3 rounded-full ${screenStatus === 'active' ? 'bg-emerald-500 animate-ping shadow-[0_0_12px_#10b981]' : screenStatus === 'requesting' ? 'bg-amber-400 animate-pulse' : 'bg-rose-500'}`} />
+            <div>
+              <span className="text-emerald-300 font-extrabold block text-sm tracking-wide">
+                {screenStatus === 'active' ? '🟢 LEYENDO PANTALLA' : screenStatus === 'requesting' ? '🟡 SOLICITANDO PERMISO...' : '🔴 LECTURA PANTALLA INACTIVA'}
+              </span>
+              <span className="text-slate-300 text-[11px] font-bold">
+                {screenScanSubState === 'detectado' && lastDetectedTicket !== '—'
+                  ? `✓ TICKET ${lastDetectedTicket} DETECTADO`
+                  : screenScanSubState === 'buscando'
+                  ? '🔍 BUSCANDO SIGUIENTE TICKET...'
+                  : '🟢 ESCANEANDO PANTALLA DE OTRA APP'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {screenStatus === 'active' ? (
+              <>
+                <button
+                  onClick={() => setIsOcrPaused(!isOcrPaused)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition-all ${
+                    isOcrPaused ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-amber-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {isOcrPaused ? <Play size={12} /> : <Pause size={12} />}
+                  {isOcrPaused ? 'REANUDAR' : 'PAUSAR'}
+                </button>
+                <button
+                  onClick={stopScreenCapture}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-600/30 hover:bg-rose-600/50 border border-rose-500/40 text-rose-200 flex items-center gap-1 transition-all"
+                >
+                  <StopCircle size={12} />
+                  DETENER
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={startScreenCapture}
+                className="px-4 py-2 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 flex items-center gap-1.5 transition-all cursor-pointer"
+              >
+                <Smartphone size={14} />
+                LEER OTRA APP
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 mb-3 flex items-center justify-between text-xs font-mono">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
+            <div>
+              <span className="text-emerald-400 font-bold block text-sm">🟢 OCR CÁMARA ACTIVO</span>
+              <span className="text-slate-400 text-[10px]">
+                {isProcessingFrame ? 'Detectando...' : 'Escaneando tickets...'}
+              </span>
+            </div>
+          </div>
+          <div className="text-right border-l border-emerald-500/20 pl-4">
+            <span className="text-slate-400 text-[10px] block uppercase font-sans">Último Ticket</span>
+            <span className="text-emerald-300 font-bold text-base">
+              {lastDetectedTicket !== '—' ? `#${lastDetectedTicket}` : '—'}
             </span>
           </div>
         </div>
-        <div className="text-right border-l border-emerald-500/20 pl-4">
-          <span className="text-slate-400 text-[10px] block uppercase font-sans">Último Ticket</span>
-          <span className="text-emerald-300 font-bold text-base">
-            {lastDetectedTicket !== '—' ? `#${lastDetectedTicket}` : '—'}
-          </span>
-        </div>
-      </div>
+      )}
 
       {/* Mini-metrics grid */}
       <div className="grid grid-cols-3 gap-2 mb-3 text-[11px] font-mono">
