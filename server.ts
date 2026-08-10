@@ -2,10 +2,16 @@ import express from "express";
 import path from "path";
 import http from "http";
 import fs from "fs";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
+
+// Security helper: Sanitize string identifiers to prevent path traversal
+function sanitizeKey(str: string): string {
+  if (!str) return "";
+  return path.basename(str).replace(/[^a-zA-Z0-9_\-\.]/g, "");
+}
 
 let ytApiKeyCache: string | null = null;
 
@@ -166,46 +172,46 @@ async function startServer() {
     });
   });
 
-  // Helper to transcode video with maximum Samsung Tizen compatibility
+  // Helper to transcode video with maximum Samsung Tizen compatibility using execFile
   const transcodeVideo = (inputPath: string, outputPath: string, stage: number): Promise<void> => {
     return new Promise((resolve, reject) => {
-      let ffmpegCmd = "";
+      let args: string[] = [];
       
       if (stage === 0) {
         // Stage 0: Maximum compatibility profile (H.264 Main @ Level 4.0, AAC 48kHz stereo, faststart)
-        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v main -level 4.0 -pix_fmt yuv420p -c:a aac -ar 48000 -ac 2 -movflags +faststart "${outputPath}"`;
+        args = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", outputPath];
       } else if (stage === 1) {
         // Stage 1: Extreme compatibility profile (H.264 Baseline @ Level 3.1, AAC 44.1kHz stereo, faststart)
-        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -c:a aac -ar 44100 -ac 2 -movflags +faststart "${outputPath}"`;
+        args = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath];
       } else if (stage === 2) {
         // Stage 2: Reduced Resolution (1280x720) & Bitrate (1200k), baseline level 3.0
-        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 1200k -maxrate 1200k -bufsize 2400k -c:a aac -ar 44100 -ac 2 -movflags +faststart "${outputPath}"`;
+        args = ["-y", "-i", inputPath, "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "1200k", "-maxrate", "1200k", "-bufsize", "2400k", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath];
       } else {
         // Stage 3: Low Resolution (854x480) & Minimal Bitrate (600k) for slow TV chips
-        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 600k -maxrate 600k -bufsize 1200k -c:a aac -ar 44100 -ac 2 -movflags +faststart "${outputPath}"`;
+        args = ["-y", "-i", inputPath, "-vf", "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "600k", "-maxrate", "600k", "-bufsize", "1200k", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath];
       }
 
-      console.log(`[Transcoder] Running stage ${stage} command: ${ffmpegCmd}`);
+      console.log(`[Transcoder] Running stage ${stage} with ffmpeg args: ${args.join(" ")}`);
       
-      exec(ffmpegCmd, (error, stdout, stderr) => {
+      execFile("ffmpeg", args, (error, stdout, stderr) => {
         if (error) {
           const errStr = (stderr || "").toString().toLowerCase();
           // If it fails on audio codecs/streams (e.g. video has no audio channel), fallback with no audio (-an)
           if (errStr.includes("audio") || errStr.includes("aac") || errStr.includes("sample rate") || errStr.includes("stream")) {
             console.warn("[Transcoder] Failed with audio settings. Retrying without audio track (-an)...");
-            let retryCmd = "";
+            let retryArgs: string[] = [];
             if (stage === 0) {
-              retryCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v main -level 4.0 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
+              retryArgs = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", outputPath];
             } else if (stage === 1) {
-              retryCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
+              retryArgs = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", outputPath];
             } else if (stage === 2) {
-              retryCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 1200k -maxrate 1200k -bufsize 2400k -an -movflags +faststart "${outputPath}"`;
+              retryArgs = ["-y", "-i", inputPath, "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "1200k", "-maxrate", "1200k", "-bufsize", "2400k", "-an", "-movflags", "+faststart", outputPath];
             } else {
-              retryCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 600k -maxrate 600k -bufsize 1200k -an -movflags +faststart "${outputPath}"`;
+              retryArgs = ["-y", "-i", inputPath, "-vf", "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "600k", "-maxrate", "600k", "-bufsize", "1200k", "-an", "-movflags", "+faststart", outputPath];
             }
 
-            console.log(`[Transcoder] Running fallback command: ${retryCmd}`);
-            exec(retryCmd, (retryError, retryStdout, retryStderr) => {
+            console.log(`[Transcoder] Running fallback ffmpeg args: ${retryArgs.join(" ")}`);
+            execFile("ffmpeg", retryArgs, (retryError, retryStdout, retryStderr) => {
               if (retryError) {
                 reject(new Error(`Transcode fallback failed: ${retryStderr || retryError.message}`));
               } else {
@@ -224,6 +230,22 @@ async function startServer() {
 
   // Store active upload metadata or temporary folders
   const tempUploadsBase = path.join(process.cwd(), "temp_uploads");
+
+  // Periodic cleanup for orphaned chunk upload sessions older than 6 hours
+  setInterval(async () => {
+    try {
+      if (!fs.existsSync(tempUploadsBase)) return;
+      const dirs = await fs.promises.readdir(tempUploadsBase);
+      const now = Date.now();
+      for (const dir of dirs) {
+        const fullPath = path.join(tempUploadsBase, dir);
+        const stat = await fs.promises.stat(fullPath);
+        if (now - stat.mtimeMs > 6 * 3600 * 1000) {
+          await fs.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+    } catch (e) {}
+  }, 3600 * 1000);
 
   app.post("/api/upload-chunk/init", express.json(), async (req, res) => {
     try {
@@ -249,7 +271,7 @@ async function startServer() {
 
   app.post("/api/upload-chunk/chunk", express.raw({ type: "*/*", limit: "15mb" }), async (req, res) => {
     try {
-      const uploadId = req.query.uploadId as string;
+      const uploadId = sanitizeKey(req.query.uploadId as string);
       const chunkIndex = parseInt(req.query.chunkIndex as string, 10);
 
       if (!uploadId || isNaN(chunkIndex)) {
@@ -278,7 +300,8 @@ async function startServer() {
   });
 
   app.post("/api/upload-chunk/complete", express.json(), async (req, res) => {
-    const { uploadId, stage } = req.body;
+    const uploadId = sanitizeKey(req.body.uploadId || "");
+    const stage = req.body.stage;
     if (!uploadId) {
       return res.status(400).json({ error: "Falta parámetro uploadId" });
     }
@@ -329,9 +352,9 @@ async function startServer() {
         try {
           // Loss-less faststart container correction: copy audio/video codecs as-is, but put moov atom at the beginning
           await new Promise<void>((resolve, reject) => {
-            const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -c copy -movflags +faststart "${outputPath}"`;
-            console.log(`[Chunk Upload Complete] Running faststart optimization: ${ffmpegCmd}`);
-            exec(ffmpegCmd, (error, stdout, stderr) => {
+            const fsArgs = ["-y", "-i", inputPath, "-c", "copy", "-movflags", "+faststart", outputPath];
+            console.log(`[Chunk Upload Complete] Running faststart optimization: ffmpeg ${fsArgs.join(" ")}`);
+            execFile("ffmpeg", fsArgs, (error, stdout, stderr) => {
               if (error) {
                 reject(error);
               } else {
@@ -573,7 +596,8 @@ async function startServer() {
   });
 
   app.get("/api/media/:roomCode/:mediaKey", (req, res) => {
-    const { roomCode, mediaKey } = req.params;
+    const roomCode = sanitizeKey(req.params.roomCode);
+    const mediaKey = sanitizeKey(req.params.mediaKey);
     
     // Add full CORS support headers for absolute compatibility with Tizen web wrappers
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -604,8 +628,17 @@ async function startServer() {
     const range = req.headers.range;
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : mediaItem.data.length - 1;
+      let start = parseInt(parts[0], 10);
+      let end = parts[1] ? parseInt(parts[1], 10) : mediaItem.data.length - 1;
+
+      if (isNaN(start)) start = 0;
+      if (isNaN(end) || end >= mediaItem.data.length) end = mediaItem.data.length - 1;
+
+      if (start >= mediaItem.data.length || start > end) {
+        res.setHeader("Content-Range", `bytes */${mediaItem.data.length}`);
+        return res.status(416).end();
+      }
+
       const chunksize = (end - start) + 1;
       const file = mediaItem.data.slice(start, end + 1);
 
