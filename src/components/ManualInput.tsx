@@ -3,12 +3,14 @@ import { Keyboard, Hash, CheckCircle, Smartphone } from 'lucide-react';
 
 interface ManualInputProps {
   onAddTicket: (num: string) => void;
+  onAddDirectTicket?: (num: string) => void;
   disabled?: boolean;
 }
 
-export default function ManualInput({ onAddTicket, disabled = false }: ManualInputProps) {
+export default function ManualInput({ onAddTicket, onAddDirectTicket, disabled = false }: ManualInputProps) {
   const [value, setValue] = useState('');
-  const [justAdded, setJustAdded] = useState<string | null>(null);
+  const [targetDestination, setTargetDestination] = useState<'active' | 'waiting'>('active');
+  const [justAdded, setJustAdded] = useState<{ number: string; destination: 'active' | 'waiting' } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Keep focus active
@@ -47,6 +49,26 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
     };
   }, [disabled]);
 
+  const submitValue = (val: string, destination: 'active' | 'waiting' = targetDestination) => {
+    if (!val.trim()) return;
+    if (destination === 'waiting' && onAddDirectTicket) {
+      onAddDirectTicket(val.trim());
+    } else {
+      onAddTicket(val.trim());
+    }
+    setJustAdded({ number: val.trim(), destination });
+    setValue('');
+    setTimeout(() => {
+      setJustAdded(null);
+    }, 700);
+
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    }, 10);
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let val = e.target.value.replace(/\D/g, ''); // numbers only
     
@@ -57,22 +79,8 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
     setValue(val);
 
     if (val.length === 3) {
-      // Add instantly!
-      onAddTicket(val);
-      setJustAdded(val);
-      setValue('');
-      
-      // Auto-clear success state after 700ms
-      setTimeout(() => {
-        setJustAdded(null);
-      }, 700);
-
-      // Force refocus
-      setTimeout(() => {
-        if (inputRef.current) {
-          inputRef.current.focus();
-        }
-      }, 10);
+      // Add instantly according to targetDestination!
+      submitValue(val, targetDestination);
     }
   };
 
@@ -85,10 +93,7 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
 
     if (e.key === 'Enter') {
       if (value.trim()) {
-        onAddTicket(value);
-        setJustAdded(value);
-        setValue('');
-        setTimeout(() => setJustAdded(null), 700);
+        submitValue(value, targetDestination);
       }
       e.preventDefault();
       return;
@@ -130,19 +135,43 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
       <div className="absolute -left-12 -bottom-12 w-40 h-40 bg-violet-500/5 rounded-full blur-3xl"></div>
       <div className="absolute -right-12 -top-12 w-40 h-40 bg-emerald-500/5 rounded-full blur-3xl"></div>
       
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <div className="flex items-center gap-2.5">
           <div className="p-2.5 bg-violet-500/10 text-violet-400 rounded-xl border border-violet-500/20 shadow-inner">
             <Hash size={18} className="animate-pulse" />
           </div>
           <div>
             <h3 className="font-display font-bold text-slate-100 text-lg leading-tight">Caja de Entrada Rápida</h3>
-            <p className="text-xs text-slate-400 font-medium">Detector instantáneo sin confirmación</p>
+            <p className="text-xs text-slate-400 font-medium">Detector instantáneo al teclear 3 dígitos</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-950/30 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-full shadow-sm">
-          <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping"></span>
-          <span>CURSORES LISTOS</span>
+
+        {/* Target Destination Switcher */}
+        <div className="flex items-center gap-1 bg-slate-950 p-1 border border-slate-800 rounded-xl text-xs font-bold">
+          <button
+            type="button"
+            onClick={() => setTargetDestination('active')}
+            className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+              targetDestination === 'active'
+                ? 'bg-emerald-600 text-white shadow-sm font-extrabold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>A Listos (Llamar)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTargetDestination('waiting')}
+            className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+              targetDestination === 'waiting'
+                ? 'bg-amber-600 text-white shadow-sm font-extrabold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+            <span>A Espera</span>
+          </button>
         </div>
       </div>
 
@@ -165,12 +194,18 @@ export default function ManualInput({ onAddTicket, disabled = false }: ManualInp
 
         {/* Overlay showing "Just Added" status */}
         {justAdded ? (
-          <div className="w-full flex items-center justify-center bg-emerald-500/15 border-2 border-emerald-500/30 rounded-2xl py-6 animate-[scaleUp_0.15s_ease-out] shadow-lg shadow-emerald-500/5">
+          <div className={`w-full flex items-center justify-center border-2 rounded-2xl py-6 animate-[scaleUp_0.15s_ease-out] shadow-lg ${
+            justAdded.destination === 'waiting'
+              ? 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+              : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+          }`}>
             <div className="flex items-center gap-3">
-              <CheckCircle className="text-emerald-400 animate-[bounce_0.6s_infinite]" size={32} />
+              <CheckCircle className="animate-[bounce_0.6s_infinite]" size={32} />
               <div className="flex flex-col">
-                <span className="font-display font-extrabold text-3xl text-emerald-300 tracking-tight">#{justAdded}</span>
-                <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-widest">Ticket Añadido</span>
+                <span className="font-display font-extrabold text-3xl tracking-tight">#{justAdded.number}</span>
+                <span className="text-[11px] font-bold uppercase tracking-widest">
+                  {justAdded.destination === 'waiting' ? 'Añadido a Lista de Espera' : 'Añadido a Listos (Llamando)'}
+                </span>
               </div>
             </div>
           </div>

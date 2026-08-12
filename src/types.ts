@@ -12,6 +12,7 @@ export interface Ticket {
   deletedAt?: number;
   isPriority?: boolean;
   createdByDevice?: string;
+  source?: 'HIOPOS' | 'MANUAL' | 'OCR' | 'ANDROID' | string;
 }
 
 export type PhraseTypeEs = 
@@ -120,6 +121,28 @@ export interface AuthorizedDevice {
   lastConnected?: string;
 }
 
+export interface YouTubeVideoItem {
+  id: string; // Real YouTube Video or Playlist ID
+  type?: 'video' | 'playlist';
+  title: string;
+  thumbnail: string;
+  channel: string;
+  duration?: string;
+  url: string;
+  dateAdded?: number;
+}
+
+export interface YouTubeHistoryItem extends YouTubeVideoItem {
+  playedAt: number;
+}
+
+export interface YouTubeCustomPlaylist {
+  id: string;
+  name: string;
+  createdAt: number;
+  videos: YouTubeVideoItem[];
+}
+
 export interface MusicConfig {
   enabled: boolean;
   mode: 'duck20' | 'duck40' | 'duck60' | 'pause' | 'none'; // Lower to 20%, 40%, 60%, Pause, or Do nothing
@@ -130,6 +153,10 @@ export interface MusicConfig {
   integratedEnabled: boolean;
   integratedUrl: string;
   integratedVolume: number; // 0 to 100, default 80
+  apiKey?: string; // Opcional YouTube Data API key
+  favorites?: YouTubeVideoItem[];
+  history?: YouTubeHistoryItem[];
+  customPlaylists?: YouTubeCustomPlaylist[];
 }
 
 export interface HistoryItem {

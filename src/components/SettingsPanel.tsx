@@ -195,7 +195,89 @@ export default function SettingsPanel({
   availableRooms = [],
   lastConnectionError = '',
 }: SettingsPanelProps) {
-  const [subTab, setSubTab] = useState<'general' | 'temas' | 'diseno' | 'tv' | 'ocr' | 'sonido' | 'videos' | 'musica' | 'ia' | 'respaldos' | 'dispositivos' | 'mantenimiento' | 'documentacion_pdf'>('general');
+  const [subTab, setSubTab] = useState<'general' | 'hiopos' | 'temas' | 'diseno' | 'tv' | 'ocr' | 'sonido' | 'videos' | 'musica' | 'ia' | 'respaldos' | 'dispositivos' | 'mantenimiento' | 'documentacion_pdf'>('general');
+
+  // HIOPOS integration state & status fetch
+  const [hioposStatus, setHioposStatus] = useState<{
+    connected: boolean;
+    lastConnected: string;
+    deviceId: string;
+    ticketsCount: number;
+    lastTicket: string;
+    recentTickets: Array<{ number: string; success: boolean; duplicate?: boolean; timestamp: number; timeStr: string; deviceId: string; error?: string }>;
+  }>({
+    connected: false,
+    lastConnected: '--:--',
+    deviceId: 'HIOPOS-01',
+    ticketsCount: 0,
+    lastTicket: '--',
+    recentTickets: []
+  });
+
+  const [sendingTestTicket, setSendingTestTicket] = useState(false);
+  const [testTicketResult, setTestTicketResult] = useState<string | null>(null);
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
+
+  const fetchHioposStatus = async () => {
+    try {
+      const res = await fetch('/api/hiopos/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setHioposStatus({
+            connected: data.connected,
+            lastConnected: data.lastConnected || '--:--',
+            deviceId: data.deviceId || 'HIOPOS-01',
+            ticketsCount: data.ticketsCount || 0,
+            lastTicket: data.lastTicket || '--',
+            recentTickets: data.recentTickets || []
+          });
+        }
+      }
+    } catch (e) {
+      // offline/fetch ignore
+    }
+  };
+
+  useEffect(() => {
+    fetchHioposStatus();
+    const interval = setInterval(fetchHioposStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleSendTestTicket = async () => {
+    setSendingTestTicket(true);
+    setTestTicketResult(null);
+    try {
+      const code = pairingCode || localStorage.getItem('pairedCode') || '';
+      const res = await fetch('/api/hiopos/ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticket: '99999',
+          deviceId: 'HIOPOS-TEST-01',
+          source: 'HIOPOS',
+          method: 'test_button',
+          code: code
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.duplicate) {
+          setTestTicketResult('✔ Ticket #99999 enviado. Detectado como DUPLICADO (Protección activa).');
+        } else {
+          setTestTicketResult('✔ Ticket #99999 enviado con éxito a la LISTA DE ESPERA.');
+        }
+        fetchHioposStatus();
+      } else {
+        setTestTicketResult(`✕ Error: ${data.error || 'No se pudo enviar el ticket de prueba'}`);
+      }
+    } catch (err: any) {
+      setTestTicketResult(`✕ Error de red: ${err.message || 'Servidor no accesible'}`);
+    } finally {
+      setSendingTestTicket(false);
+    }
+  };
 
   // Adaptive AI OCR correction learning states
   const [ocrCorrections, setOcrCorrections] = useState<Record<string, string>>(() => {
@@ -288,7 +370,7 @@ export default function SettingsPanel({
 
   const handleRunGeneralDiagnostics = async () => {
     setGeneralDiagnosticStatus('running');
-    const logs = [
+    const logs: Array<{ name: string; status: 'idle' | 'pending' | 'running' | 'success' | 'failed'; details: string }> = [
       { name: 'Sintetizador de Voz (TTS)', status: 'running', details: 'Evaluando SpeechSynthesis...' },
       { name: 'Motor de Base de Datos', status: 'pending', details: 'En espera...' },
       { name: 'Sistema de Sincronización y Red', status: 'pending', details: 'En espera...' },
@@ -1047,6 +1129,7 @@ export default function SettingsPanel({
 
   const tabsList = [
     { id: 'general', label: 'GENERAL', icon: <Sliders size={14} /> },
+    { id: 'hiopos', label: '⚡ INTEGRACIÓN HIOPOS', icon: <Zap size={14} /> },
     { id: 'temas', label: '🎨 TEMAS', icon: <Palette size={14} /> },
     { id: 'diseno', label: '📱 DISEÑO RESPONSIVE', icon: <Smartphone size={14} /> },
     { id: 'tv', label: 'TV', icon: <Tv size={14} /> },
@@ -1094,6 +1177,201 @@ export default function SettingsPanel({
       {/* Main settings content space */}
       <div className="flex-1 p-6 sm:p-8 overflow-y-auto max-h-[85vh] space-y-8 bg-slate-900/10">
         
+        {/* HIOPOS TAB */}
+        {subTab === 'hiopos' && (
+          <div className="space-y-6 animate-fade-in">
+            {/* Header */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+              <div className="flex items-center gap-3 border-b border-slate-800 pb-4 mb-4">
+                <div className="p-3 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
+                  <Zap size={24} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-100 text-xl tracking-tight">INTEGRACIÓN HIOPOS</h3>
+                  <p className="text-xs text-slate-400">
+                    Recepción automática de números de ticket desde la aplicación Android que lee HIOPOS.
+                  </p>
+                </div>
+              </div>
+
+              {/* Main Status Grid (Requirements 9 & 10) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                {/* Estado */}
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Estado HIOPOS</span>
+                  <div className="mt-2 flex items-center gap-2">
+                    {hioposStatus.connected ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        🟢 Conectado
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                        <span className="w-2 h-2 rounded-full bg-rose-400" />
+                        🔴 Desconectado
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Dispositivo */}
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Dispositivo</span>
+                  <span className="mt-2 text-base font-black text-slate-100 truncate font-mono">
+                    {hioposStatus.deviceId}
+                  </span>
+                </div>
+
+                {/* Tickets recibidos */}
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Tickets Recibidos</span>
+                  <span className="mt-2 text-2xl font-black text-indigo-400 font-mono">
+                    {hioposStatus.ticketsCount}
+                  </span>
+                </div>
+
+                {/* Último ticket */}
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Último Ticket</span>
+                  <span className="mt-2 text-2xl font-black text-amber-400 font-mono">
+                    {hioposStatus.lastTicket}
+                  </span>
+                </div>
+
+                {/* Última conexión */}
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Última Conexión</span>
+                  <span className="mt-2 text-base font-bold text-slate-300 font-mono">
+                    {hioposStatus.lastConnected}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* BOTÓN DE PRUEBA (Requirement 11) */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-bold text-slate-100 text-base">Prueba de Integración en Real-Time</h4>
+                  <p className="text-xs text-slate-400">
+                    Simula la recepción del ticket #99999 enviándolo por la misma ruta API y canal WebSocket que Android. Aparecerá en la Lista de Espera.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleSendTestTicket}
+                  disabled={sendingTestTicket}
+                  className="px-5 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 hover:shadow-amber-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shrink-0"
+                >
+                  <Zap size={16} className={sendingTestTicket ? 'animate-spin' : ''} />
+                  <span>{sendingTestTicket ? 'ENVIANDO...' : 'ENVIAR TICKET DE PRUEBA'}</span>
+                </button>
+              </div>
+
+              {testTicketResult && (
+                <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                  testTicketResult.startsWith('✔')
+                    ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-rose-500/10 text-rose-300 border border-rose-500/30'
+                }`}>
+                  <span>{testTicketResult}</span>
+                </div>
+              )}
+            </div>
+
+            {/* REGISTRO DE TICKETS HIOPOS (ÚLTIMOS TICKETS HIOPOS - Requirement 10) */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div>
+                  <h4 className="font-bold text-slate-100 text-base uppercase tracking-wider">ÚLTIMOS TICKETS HIOPOS</h4>
+                  <p className="text-xs text-slate-400">Registro en vivo de confirmación de tickets procesados.</p>
+                </div>
+                <button
+                  onClick={fetchHioposStatus}
+                  className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-all flex items-center gap-1 cursor-pointer font-bold"
+                >
+                  <RefreshCw size={14} />
+                  <span>Actualizar</span>
+                </button>
+              </div>
+
+              {hioposStatus.recentTickets.length === 0 ? (
+                <div className="p-8 text-center bg-slate-950/40 rounded-xl border border-slate-800/60">
+                  <p className="text-xs text-slate-500">Aún no se han recibido tickets desde la aplicación Android de HIOPOS.</p>
+                  <p className="text-[11px] text-slate-600 mt-1">Usa el botón "Enviar Ticket de Prueba" para verificar el flujo.</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-800/60 bg-slate-950/60 rounded-xl border border-slate-800/80 overflow-hidden font-mono text-xs">
+                  {hioposStatus.recentTickets.map((t, idx) => (
+                    <div key={idx} className="p-3.5 flex items-center justify-between hover:bg-slate-900/50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <span className="font-black text-amber-400 text-sm">{t.number}</span>
+                        <span className="text-[11px] text-slate-500 font-sans">{t.deviceId}</span>
+                        {t.duplicate && (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-sans font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                            Duplicado
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <span className="text-slate-400 text-[11px] font-sans">{t.timeStr}</span>
+                        {t.duplicate ? (
+                          <span className="text-amber-400 font-bold text-sm" title="Duplicado ignorado">✕</span>
+                        ) : t.success ? (
+                          <span className="text-emerald-400 font-bold text-sm" title="Procesado correctamente">✓</span>
+                        ) : (
+                          <span className="text-rose-400 font-bold text-sm" title="Error">✕</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* CONFIGURACIÓN Y DOCUMENTACIÓN API PARA ANDROID */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+              <h4 className="font-bold text-slate-100 text-base flex items-center gap-2">
+                <span>📱 Configuración para la App Android (HIOPOS Reader)</span>
+              </h4>
+              <p className="text-xs text-slate-400">
+                Configura la aplicación lectora en tu dispositivo Android HIOPOS apuntando a este servidor endpoint:
+              </p>
+
+              <div className="bg-slate-950 rounded-xl border border-slate-800 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase font-sans">ENDPOINT URL (POST)</span>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/api/hiopos/ticket`;
+                      navigator.clipboard.writeText(url);
+                      setCopiedEndpoint(true);
+                      setTimeout(() => setCopiedEndpoint(false), 2000);
+                    }}
+                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded text-xs flex items-center gap-1 transition-all cursor-pointer font-sans font-bold"
+                  >
+                    {copiedEndpoint ? <Check size={12} /> : <Zap size={12} />}
+                    <span>{copiedEndpoint ? '¡Copiado!' : 'Copiar URL'}</span>
+                  </button>
+                </div>
+                <div className="bg-slate-900 p-2.5 rounded-lg text-emerald-400 font-mono text-xs select-all overflow-x-auto">
+                  {window.location.origin}/api/hiopos/ticket
+                </div>
+
+                <span className="text-[11px] font-bold text-slate-400 uppercase font-sans block mt-2">CUERPO DEL MENSAJE JSON (BODY)</span>
+                <pre className="bg-slate-900 p-3 rounded-lg text-slate-300 font-mono text-xs overflow-x-auto">
+{`{
+  "ticket": "1548",
+  "deviceId": "HIOPOS-01",
+  "source": "HIOPOS",
+  "method": "accessibility"
+}`}
+                </pre>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* TEMAS TAB (🎨 Library & Custom Themes) */}
         {subTab === 'temas' && (
           <div className="animate-fade-in">
@@ -2368,13 +2646,13 @@ export default function SettingsPanel({
                               {/* Step 2: Chunk Upload */}
                               <div className="flex items-start gap-2.5">
                                 <div className={`p-0.5 rounded-full mt-0.5 ${
-                                  videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success'
+                                  videoValidationStatus === 'validating'
                                     ? 'bg-emerald-500/10 text-emerald-400'
                                     : videoValidationStatus === 'transcoding'
                                       ? 'bg-indigo-500/10 text-indigo-400 animate-pulse'
                                       : 'bg-slate-950 text-slate-700'
                                 }`}>
-                                  {videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success' ? (
+                                  {videoValidationStatus === 'validating' ? (
                                     <Check size={11} />
                                   ) : videoValidationStatus === 'transcoding' ? (
                                     <RefreshCw size={11} className="animate-spin" />
@@ -2386,7 +2664,7 @@ export default function SettingsPanel({
                                   <span className={`text-[10px] font-bold block ${
                                     videoValidationStatus === 'transcoding'
                                       ? 'text-indigo-400 font-semibold'
-                                      : videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success'
+                                      : videoValidationStatus === 'validating'
                                         ? 'text-slate-300'
                                         : 'text-slate-600'
                                   }`}>
@@ -2407,11 +2685,11 @@ export default function SettingsPanel({
                               {/* Step 3: Server Transcoding / Optimizing */}
                               <div className="flex items-start gap-2.5">
                                 <div className={`p-0.5 rounded-full mt-0.5 ${
-                                  videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success'
+                                  videoValidationStatus === 'validating'
                                     ? 'bg-emerald-500/10 text-emerald-400'
                                     : 'bg-slate-950 text-slate-700'
                                 }`}>
-                                  {videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success' ? (
+                                  {videoValidationStatus === 'validating' ? (
                                     <Check size={11} />
                                   ) : (
                                     <div className="w-2.5 h-2.5 rounded-full bg-slate-800 mt-1 mx-0.5" />
@@ -2419,13 +2697,13 @@ export default function SettingsPanel({
                                 </div>
                                 <div className="flex-1 min-w-0">
                                   <span className={`text-[10px] font-bold block ${
-                                    videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success'
+                                    videoValidationStatus === 'validating'
                                       ? 'text-slate-300'
                                       : 'text-slate-600'
                                   }`}>
                                     Optimizando y procesando en servidor...
                                   </span>
-                                  {videoValidationStatus === 'validating' || videoValidationStatus === 'testing' || videoValidationStatus === 'success' ? (
+                                  {videoValidationStatus === 'validating' ? (
                                     <span className="text-[9px] text-emerald-400 block leading-relaxed mt-0.5">
                                       ✔ Ensamblado correcto y optimizado para pantallas públicas y Smart TV.
                                     </span>
@@ -2440,11 +2718,11 @@ export default function SettingsPanel({
                               {/* Step 4: Sincronización y Validación */}
                               <div className="flex items-start gap-2.5">
                                 <div className={`p-0.5 rounded-full mt-0.5 ${
-                                  videoValidationStatus === 'testing' || videoValidationStatus === 'success'
+                                  videoValidationStatus === 'validating'
                                     ? 'bg-emerald-500/10 text-emerald-400'
                                     : 'bg-slate-950 text-slate-700'
                                 }`}>
-                                  {videoValidationStatus === 'testing' || videoValidationStatus === 'success' ? (
+                                  {videoValidationStatus === 'validating' ? (
                                     <Check size={11} />
                                   ) : (
                                     <div className="w-2.5 h-2.5 rounded-full bg-slate-800 mt-1 mx-0.5" />
@@ -2452,13 +2730,13 @@ export default function SettingsPanel({
                                 </div>
                                 <div className="flex-1 min-w-0">
                                   <span className={`text-[10px] font-bold block ${
-                                    videoValidationStatus === 'testing' || videoValidationStatus === 'success'
+                                    videoValidationStatus === 'validating'
                                       ? 'text-slate-300'
                                       : 'text-slate-600'
                                   }`}>
                                     Sincronizando con la Pantalla Pública...
                                   </span>
-                                  {videoValidationStatus === 'testing' || videoValidationStatus === 'success' ? (
+                                  {videoValidationStatus === 'validating' ? (
                                     <span className="text-[9px] text-emerald-400 block leading-relaxed mt-0.5">
                                       ✔ Canal listo y listo para emitir.
                                     </span>

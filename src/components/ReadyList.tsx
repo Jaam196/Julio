@@ -13,6 +13,7 @@ interface ReadyListProps {
   activeGlowColor?: string;
   selectedReadyTicketId?: string | null;
   onSelectReadyTicket?: (id: string) => void;
+  onClearList?: () => void;
 }
 
 export default function ReadyList({
@@ -24,9 +25,25 @@ export default function ReadyList({
   activeGlowColor = '#10b981',
   selectedReadyTicketId = null,
   onSelectReadyTicket,
+  onClearList,
 }: ReadyListProps) {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [timeState, setTimeState] = useState(Date.now());
+
+  const handleClearAllClick = () => {
+    if (confirmClearAll) {
+      setConfirmClearAll(false);
+      if (onClearList) {
+        onClearList();
+      } else {
+        tickets.forEach((t) => onDeleteTicket(t.id));
+      }
+    } else {
+      setConfirmClearAll(true);
+      setTimeout(() => setConfirmClearAll(false), 4000);
+    }
+  };
 
   // Dynamic ticking to update elapsed times since completed (ready)
   useEffect(() => {
@@ -66,10 +83,27 @@ export default function ReadyList({
             {tickets.length}
           </span>
         </div>
-        <span className="text-[10px] text-slate-500 font-mono font-bold hidden sm:flex items-center gap-1">
-          <Info size={11} />
-          Canal TV Activo
-        </span>
+        <div className="flex items-center gap-2">
+          {tickets.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearAllClick}
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer shadow-sm ${
+                confirmClearAll
+                  ? 'bg-rose-600 text-white border border-rose-400 animate-pulse'
+                  : 'text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20'
+              }`}
+              title="Borrar todos los pedidos de la lista de listos"
+            >
+              <Trash2 size={12} />
+              <span>{confirmClearAll ? '¿Confirmar vaciar?' : 'Vaciar lista'}</span>
+            </button>
+          )}
+          <span className="text-[10px] text-slate-500 font-mono font-bold hidden sm:flex items-center gap-1">
+            <Info size={11} />
+            Canal TV Activo
+          </span>
+        </div>
       </div>
 
       {sortedReady.length === 0 ? (

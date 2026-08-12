@@ -17,6 +17,7 @@ interface WaitingListProps {
   onToggleWaitlistPause?: () => void;
   onCallNow?: (id: string) => void;
   onTogglePriority?: (id: string) => void;
+  onClearList?: () => void;
 }
 
 export default function WaitingList({
@@ -32,11 +33,27 @@ export default function WaitingList({
   onToggleWaitlistPause,
   onCallNow,
   onTogglePriority,
+  onClearList,
 }: WaitingListProps) {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [timeState, setTimeState] = useState(Date.now());
   const [directNumber, setDirectNumber] = useState('');
   const longPressTimerRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
+
+  const handleClearAllClick = () => {
+    if (confirmClearAll) {
+      setConfirmClearAll(false);
+      if (onClearList) {
+        onClearList();
+      } else {
+        tickets.forEach((t) => onDeleteTicket(t.id));
+      }
+    } else {
+      setConfirmClearAll(true);
+      setTimeout(() => setConfirmClearAll(false), 4000);
+    }
+  };
 
   // Dynamic ticking to update waiting times
   useEffect(() => {
@@ -88,10 +105,27 @@ export default function WaitingList({
             {tickets.length}
           </span>
         </div>
-        <span className="text-[10px] text-slate-500 font-mono font-medium hidden sm:flex items-center gap-1">
-          <Info size={11} />
-          Haz clic o pulsa para seleccionar
-        </span>
+        <div className="flex items-center gap-2">
+          {tickets.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearAllClick}
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer shadow-sm ${
+                confirmClearAll
+                  ? 'bg-rose-600 text-white border border-rose-400 animate-pulse'
+                  : 'text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20'
+              }`}
+              title="Borrar todos los tickets de la lista de espera"
+            >
+              <Trash2 size={12} />
+              <span>{confirmClearAll ? '¿Confirmar vaciar?' : 'Vaciar lista'}</span>
+            </button>
+          )}
+          <span className="text-[10px] text-slate-500 font-mono font-medium hidden sm:flex items-center gap-1">
+            <Info size={11} />
+            Haz clic o pulsa para seleccionar
+          </span>
+        </div>
       </div>
 
       {/* Waitlist Pause Control and Indicator */}

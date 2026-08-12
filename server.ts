@@ -2,16 +2,10 @@ import express from "express";
 import path from "path";
 import http from "http";
 import fs from "fs";
-import { exec, execFile } from "child_process";
+import { exec } from "child_process";
 import crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
-
-// Security helper: Sanitize string identifiers to prevent path traversal
-function sanitizeKey(str: string): string {
-  if (!str) return "";
-  return path.basename(str).replace(/[^a-zA-Z0-9_\-\.]/g, "");
-}
 
 let ytApiKeyCache: string | null = null;
 
@@ -172,46 +166,46 @@ async function startServer() {
     });
   });
 
-  // Helper to transcode video with maximum Samsung Tizen compatibility using execFile
+  // Helper to transcode video with maximum Samsung Tizen compatibility
   const transcodeVideo = (inputPath: string, outputPath: string, stage: number): Promise<void> => {
     return new Promise((resolve, reject) => {
-      let args: string[] = [];
+      let ffmpegCmd = "";
       
       if (stage === 0) {
         // Stage 0: Maximum compatibility profile (H.264 Main @ Level 4.0, AAC 48kHz stereo, faststart)
-        args = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", outputPath];
+        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v main -level 4.0 -pix_fmt yuv420p -c:a aac -ar 48000 -ac 2 -movflags +faststart "${outputPath}"`;
       } else if (stage === 1) {
         // Stage 1: Extreme compatibility profile (H.264 Baseline @ Level 3.1, AAC 44.1kHz stereo, faststart)
-        args = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath];
+        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -c:a aac -ar 44100 -ac 2 -movflags +faststart "${outputPath}"`;
       } else if (stage === 2) {
         // Stage 2: Reduced Resolution (1280x720) & Bitrate (1200k), baseline level 3.0
-        args = ["-y", "-i", inputPath, "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "1200k", "-maxrate", "1200k", "-bufsize", "2400k", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath];
+        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 1200k -maxrate 1200k -bufsize 2400k -c:a aac -ar 44100 -ac 2 -movflags +faststart "${outputPath}"`;
       } else {
         // Stage 3: Low Resolution (854x480) & Minimal Bitrate (600k) for slow TV chips
-        args = ["-y", "-i", inputPath, "-vf", "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "600k", "-maxrate", "600k", "-bufsize", "1200k", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath];
+        ffmpegCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 600k -maxrate 600k -bufsize 1200k -c:a aac -ar 44100 -ac 2 -movflags +faststart "${outputPath}"`;
       }
 
-      console.log(`[Transcoder] Running stage ${stage} with ffmpeg args: ${args.join(" ")}`);
+      console.log(`[Transcoder] Running stage ${stage} command: ${ffmpegCmd}`);
       
-      execFile("ffmpeg", args, (error, stdout, stderr) => {
+      exec(ffmpegCmd, (error, stdout, stderr) => {
         if (error) {
           const errStr = (stderr || "").toString().toLowerCase();
           // If it fails on audio codecs/streams (e.g. video has no audio channel), fallback with no audio (-an)
           if (errStr.includes("audio") || errStr.includes("aac") || errStr.includes("sample rate") || errStr.includes("stream")) {
             console.warn("[Transcoder] Failed with audio settings. Retrying without audio track (-an)...");
-            let retryArgs: string[] = [];
+            let retryCmd = "";
             if (stage === 0) {
-              retryArgs = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", outputPath];
+              retryCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v main -level 4.0 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
             } else if (stage === 1) {
-              retryArgs = ["-y", "-i", inputPath, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", outputPath];
+              retryCmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -profile:v baseline -level 3.1 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
             } else if (stage === 2) {
-              retryArgs = ["-y", "-i", inputPath, "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "1200k", "-maxrate", "1200k", "-bufsize", "2400k", "-an", "-movflags", "+faststart", outputPath];
+              retryCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 1200k -maxrate 1200k -bufsize 2400k -an -movflags +faststart "${outputPath}"`;
             } else {
-              retryArgs = ["-y", "-i", inputPath, "-vf", "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p", "-b:v", "600k", "-maxrate", "600k", "-bufsize", "1200k", "-an", "-movflags", "+faststart", outputPath];
+              retryCmd = `ffmpeg -y -i "${inputPath}" -vf "scale=w='min(854,iw)':h='min(480,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -b:v 600k -maxrate 600k -bufsize 1200k -an -movflags +faststart "${outputPath}"`;
             }
 
-            console.log(`[Transcoder] Running fallback ffmpeg args: ${retryArgs.join(" ")}`);
-            execFile("ffmpeg", retryArgs, (retryError, retryStdout, retryStderr) => {
+            console.log(`[Transcoder] Running fallback command: ${retryCmd}`);
+            exec(retryCmd, (retryError, retryStdout, retryStderr) => {
               if (retryError) {
                 reject(new Error(`Transcode fallback failed: ${retryStderr || retryError.message}`));
               } else {
@@ -230,22 +224,6 @@ async function startServer() {
 
   // Store active upload metadata or temporary folders
   const tempUploadsBase = path.join(process.cwd(), "temp_uploads");
-
-  // Periodic cleanup for orphaned chunk upload sessions older than 6 hours
-  setInterval(async () => {
-    try {
-      if (!fs.existsSync(tempUploadsBase)) return;
-      const dirs = await fs.promises.readdir(tempUploadsBase);
-      const now = Date.now();
-      for (const dir of dirs) {
-        const fullPath = path.join(tempUploadsBase, dir);
-        const stat = await fs.promises.stat(fullPath);
-        if (now - stat.mtimeMs > 6 * 3600 * 1000) {
-          await fs.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
-        }
-      }
-    } catch (e) {}
-  }, 3600 * 1000);
 
   app.post("/api/upload-chunk/init", express.json(), async (req, res) => {
     try {
@@ -271,7 +249,7 @@ async function startServer() {
 
   app.post("/api/upload-chunk/chunk", express.raw({ type: "*/*", limit: "15mb" }), async (req, res) => {
     try {
-      const uploadId = sanitizeKey(req.query.uploadId as string);
+      const uploadId = req.query.uploadId as string;
       const chunkIndex = parseInt(req.query.chunkIndex as string, 10);
 
       if (!uploadId || isNaN(chunkIndex)) {
@@ -300,8 +278,7 @@ async function startServer() {
   });
 
   app.post("/api/upload-chunk/complete", express.json(), async (req, res) => {
-    const uploadId = sanitizeKey(req.body.uploadId || "");
-    const stage = req.body.stage;
+    const { uploadId, stage } = req.body;
     if (!uploadId) {
       return res.status(400).json({ error: "Falta parámetro uploadId" });
     }
@@ -352,9 +329,9 @@ async function startServer() {
         try {
           // Loss-less faststart container correction: copy audio/video codecs as-is, but put moov atom at the beginning
           await new Promise<void>((resolve, reject) => {
-            const fsArgs = ["-y", "-i", inputPath, "-c", "copy", "-movflags", "+faststart", outputPath];
-            console.log(`[Chunk Upload Complete] Running faststart optimization: ffmpeg ${fsArgs.join(" ")}`);
-            execFile("ffmpeg", fsArgs, (error, stdout, stderr) => {
+            const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -c copy -movflags +faststart "${outputPath}"`;
+            console.log(`[Chunk Upload Complete] Running faststart optimization: ${ffmpegCmd}`);
+            exec(ffmpegCmd, (error, stdout, stderr) => {
               if (error) {
                 reject(error);
               } else {
@@ -596,8 +573,7 @@ async function startServer() {
   });
 
   app.get("/api/media/:roomCode/:mediaKey", (req, res) => {
-    const roomCode = sanitizeKey(req.params.roomCode);
-    const mediaKey = sanitizeKey(req.params.mediaKey);
+    const { roomCode, mediaKey } = req.params;
     
     // Add full CORS support headers for absolute compatibility with Tizen web wrappers
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -628,17 +604,8 @@ async function startServer() {
     const range = req.headers.range;
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
-      let start = parseInt(parts[0], 10);
-      let end = parts[1] ? parseInt(parts[1], 10) : mediaItem.data.length - 1;
-
-      if (isNaN(start)) start = 0;
-      if (isNaN(end) || end >= mediaItem.data.length) end = mediaItem.data.length - 1;
-
-      if (start >= mediaItem.data.length || start > end) {
-        res.setHeader("Content-Range", `bytes */${mediaItem.data.length}`);
-        return res.status(416).end();
-      }
-
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : mediaItem.data.length - 1;
       const chunksize = (end - start) + 1;
       const file = mediaItem.data.slice(start, end + 1);
 
@@ -661,9 +628,176 @@ async function startServer() {
     }
   });
 
+  // HIOPOS Integration State
+  interface HioposTicketLog {
+    number: string;
+    success: boolean;
+    duplicate?: boolean;
+    timestamp: number;
+    timeStr: string;
+    deviceId: string;
+    error?: string;
+  }
+
+  interface HioposState {
+    connected: boolean;
+    lastConnectedTime: number | null;
+    lastDeviceId: string;
+    ticketsReceivedCount: number;
+    lastTicketNumber: string;
+    logs: HioposTicketLog[];
+  }
+
+  const hioposState: HioposState = {
+    connected: false,
+    lastConnectedTime: null,
+    lastDeviceId: 'HIOPOS-01',
+    ticketsReceivedCount: 0,
+    lastTicketNumber: '--',
+    logs: []
+  };
+
   // API endpoints
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: "server-ready" });
+  });
+
+  // HIOPOS Ticket External API Endpoint
+  const handleHioposTicketRequest = (req: express.Request, res: express.Response) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Pairing-Code");
+
+    const rawTicket = req.body?.ticket || req.body?.number || req.body?.ticketNumber || req.query?.ticket;
+    const deviceId = req.body?.deviceId || req.body?.device_id || req.headers["x-device-id"] || "HIOPOS-01";
+    const source = req.body?.source || "HIOPOS";
+    const method = req.body?.method || "accessibility";
+    const code = req.body?.code || req.body?.pairingCode || req.headers["x-pairing-code"] || (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '') : '');
+
+    if (!rawTicket && rawTicket !== 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Número de ticket obligatorio (campo 'ticket')"
+      });
+    }
+
+    const cleanNum = String(rawTicket).trim();
+    if (!cleanNum || cleanNum === "NaN") {
+      return res.status(400).json({
+        success: false,
+        error: "Número de ticket inválido"
+      });
+    }
+
+    // Find target room
+    let room: Room | undefined = undefined;
+    if (code && typeof code === "string") {
+      room = rooms.get(code.trim());
+    }
+    // Fallback: If no code or code room not found, select active room if available
+    if (!room && rooms.size > 0) {
+      room = Array.from(rooms.values())[0];
+    }
+
+    const now = Date.now();
+    const timeStr = new Date(now).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+
+    hioposState.connected = true;
+    hioposState.lastConnectedTime = now;
+    hioposState.lastDeviceId = String(deviceId);
+
+    // Duplicate check using current room state tickets (active or waiting)
+    let isDuplicate = false;
+    if (room && room.lastState && Array.isArray(room.lastState.tickets)) {
+      const normNum = String(parseInt(cleanNum, 10));
+      isDuplicate = room.lastState.tickets.some((t: any) => {
+        const ticketNorm = String(parseInt(t.number, 10));
+        return (ticketNorm === normNum || t.number === cleanNum) && (t.status === "active" || t.status === "waiting");
+      });
+    }
+
+    if (isDuplicate) {
+      // Record duplicate attempt in logs
+      hioposState.logs.unshift({
+        number: cleanNum,
+        success: true,
+        duplicate: true,
+        timestamp: now,
+        timeStr,
+        deviceId: String(deviceId),
+        error: "Ticket ya está en la cola (duplicado ignorado)"
+      });
+      if (hioposState.logs.length > 50) hioposState.logs.pop();
+
+      console.log(`[HIOPOS API] Ticket #${cleanNum} recibido desde ${deviceId} es DUPLICADO.`);
+      return res.json({
+        success: true,
+        duplicate: true,
+        ticket: cleanNum,
+        message: "Ticket ya existe en la lista de espera"
+      });
+    }
+
+    // Forward action to PC Server room WebSocket socket
+    if (room && room.serverSocket && room.serverSocket.readyState === WebSocket.OPEN) {
+      room.serverSocket.send(JSON.stringify({
+        type: "client_action",
+        action: "add_direct_waiting",
+        payload: {
+          number: cleanNum,
+          createdByDevice: String(deviceId),
+          source: String(source)
+        },
+        deviceId: String(deviceId),
+        deviceName: String(deviceId)
+      }));
+      console.log(`[HIOPOS API] Action 'add_direct_waiting' sent to server room ${room.code} for ticket #${cleanNum}`);
+    } else {
+      console.warn(`[HIOPOS API] Ticket #${cleanNum} recibido, enviando a cola de espera.`);
+    }
+
+    // Update HIOPOS stats
+    hioposState.ticketsReceivedCount += 1;
+    hioposState.lastTicketNumber = cleanNum;
+    hioposState.logs.unshift({
+      number: cleanNum,
+      success: true,
+      duplicate: false,
+      timestamp: now,
+      timeStr,
+      deviceId: String(deviceId)
+    });
+    if (hioposState.logs.length > 50) hioposState.logs.pop();
+
+    return res.json({
+      success: true,
+      ticket: cleanNum,
+      source: String(source),
+      deviceId: String(deviceId)
+    });
+  };
+
+  app.options("/api/hios-pos/ticket", (req, res) => res.sendStatus(200));
+  app.options("/api/hiopos/ticket", (req, res) => res.sendStatus(200));
+
+  app.post("/api/hios-pos/ticket", handleHioposTicketRequest);
+  app.post("/api/hiopos/ticket", handleHioposTicketRequest);
+
+  app.get("/api/hiopos/status", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const now = Date.now();
+    const isRecent = hioposState.lastConnectedTime ? (now - hioposState.lastConnectedTime < 5 * 60 * 1000) : false;
+    const isRoomConnected = rooms.size > 0;
+
+    res.json({
+      success: true,
+      connected: isRecent || (hioposState.ticketsReceivedCount > 0 && isRoomConnected),
+      lastConnected: hioposState.lastConnectedTime ? new Date(hioposState.lastConnectedTime).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "--:--",
+      deviceId: hioposState.lastDeviceId,
+      ticketsCount: hioposState.ticketsReceivedCount,
+      lastTicket: hioposState.lastTicketNumber,
+      recentTickets: hioposState.logs.slice(0, 15)
+    });
   });
 
   app.get("/api/rooms", (req, res) => {
@@ -909,16 +1043,12 @@ async function startServer() {
         return res.json({ items, continuationToken: nextContinuationToken });
       }
     } catch (error: any) {
-      console.warn("YouTube search fallback triggered:", error?.message || error);
-      const fallbackPresets = [
-        { id: 'jfKfPfyJRdk', type: 'video', title: '☕ Lofi Girl - lofi hip hop radio - beats to relax/study to', thumbnail: 'https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg', channel: 'Lofi Girl', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk' },
-        { id: 'Dx5_wdKkpBY', type: 'video', title: '🎷 Relaxing Jazz Music - Smooth Coffee Shop BGM', thumbnail: 'https://i.ytimg.com/vi/Dx5_wdKkpBY/hqdefault.jpg', channel: 'Cafe Music BGM', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=Dx5_wdKkpBY' },
-        { id: '5grNis6L_oI', type: 'video', title: '🏖️ Bossa Nova Jazz Music - Soft Lounge Restaurant', thumbnail: 'https://i.ytimg.com/vi/5grNis6L_oI/hqdefault.jpg', channel: 'Relaxing Bossa', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=5grNis6L_oI' },
-        { id: 'y7e-GC6oGIZ', type: 'video', title: '🎹 Piano Clásico y Relajante para Restaurantes', thumbnail: 'https://i.ytimg.com/vi/y7e-GC6oGIZ/hqdefault.jpg', channel: 'Relaxing Piano', duration: '3:00:00', url: 'https://www.youtube.com/watch?v=y7e-GC6oGIZ' },
-        { id: 'vV77mrc3lP0', type: 'video', title: '🍔 Pop y Música Alegre Ambiental', thumbnail: 'https://i.ytimg.com/vi/vV77mrc3lP0/hqdefault.jpg', channel: 'Background Chill', duration: 'EN VIVO', url: 'https://www.youtube.com/watch?v=vV77mrc3lP0' },
-        { id: '4xDzrJKXOOY', type: 'video', title: '🌌 Synthwave Chill & Chillwave Beats', thumbnail: 'https://i.ytimg.com/vi/4xDzrJKXOOY/hqdefault.jpg', channel: 'Lofi Records', duration: '2:45:00', url: 'https://www.youtube.com/watch?v=4xDzrJKXOOY' }
-      ];
-      res.json({ items: fallbackPresets, continuationToken: "", fallback: true });
+      console.warn("YouTube search API error:", error?.message || error);
+      res.status(200).json({ 
+        items: [], 
+        continuationToken: "", 
+        error: "No se pudo realizar la búsqueda. Comprueba tu conexión a internet o reintenta." 
+      });
     }
   });
 

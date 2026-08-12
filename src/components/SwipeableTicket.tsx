@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { motion, useAnimation, PanInfo } from 'motion/react';
+import { motion, useAnimation } from 'motion/react';
 
 interface SwipeableTicketProps {
   id: string;
@@ -41,12 +41,12 @@ export default function SwipeableTicket({
     setDragX(0);
   }, [id, controls]);
 
-  const handleDrag = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+  const handleDrag = (event: any, info: any) => {
     if (disabled) return;
     setDragX(info.offset.x);
   };
 
-  const handleDragEnd = async (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+  const handleDragEnd = async (event: any, info: any) => {
     if (disabled) return;
     const containerWidth = containerRef.current?.offsetWidth || 300;
     const threshold = containerWidth * 0.4; // 40% of width

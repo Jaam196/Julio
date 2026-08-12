@@ -4,9 +4,6 @@ import { useMediaResolver } from '../hooks/useMediaResolver';
 export interface ResolvedImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   mediaKeyOrUrl: string | undefined;
   onMediaMissing?: () => void;
-  className?: string;
-  style?: React.CSSProperties;
-  alt?: string;
   [key: string]: any;
 }
 
@@ -19,13 +16,6 @@ export function ResolvedImage({ mediaKeyOrUrl, onMediaMissing, ...props }: Resol
 export interface ResolvedVideoProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   mediaKeyOrUrl: string | undefined;
   onMediaMissing?: () => void;
-  className?: string;
-  style?: React.CSSProperties;
-  autoPlay?: boolean;
-  loop?: boolean;
-  muted?: boolean;
-  playsInline?: boolean;
-  onEnded?: (e: any) => void;
   [key: string]: any;
 }
 
@@ -126,9 +116,9 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
         console.error(`[Tizen Recovery] ${errorText}`);
         setLastError(errorText);
       }
-    } catch (err: unknown) {
+    } catch (err: any) {
       console.error("[Tizen Recovery] Network or server error during recovery transcode:", err);
-      setLastError((err as Error)?.message || "Error de red en transcodificación");
+      setLastError(err?.message || "Error de red en transcodificación");
     } finally {
       setIsUpdating(false);
     }
@@ -149,7 +139,7 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
 
   // Periodic recovery check to ensure video is always playing
   React.useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
+    let intervalId: any = null;
     
     if (src) {
       intervalId = setInterval(() => {

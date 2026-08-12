@@ -9,12 +9,19 @@ declare global {
 
 export interface MusicPlayerState {
   isPlaying: boolean;
+  isLoading: boolean;
   isDucked: boolean;
   currentVolume: number; // 0 to 100
   error: string | null;
+  lastErrorDetail: string | null;
   activeUrl: string;
   isYouTube: boolean;
   trackTitle: string;
+  channelTitle: string;
+  thumbnailUrl: string;
+  duration: number;
+  currentTime: number;
+  autoplayBlocked: boolean;
 }
 
 type Subscriber = (state: MusicPlayerState) => void;
@@ -69,36 +76,26 @@ class MusicController {
     shuffle: false,
     resumePlaylistProgress: true,
     integratedEnabled: true,
-    integratedUrl: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
+    integratedUrl: '',
     integratedVolume: 80,
+    favorites: [],
+    history: [],
+    customPlaylists: []
   };
 
   private isPlaying = false;
+  private isLoading = false;
   private isDucked = false;
-  private originalVolumeBeforeDucking = 80; // 0 to 100
+  private originalVolumeBeforeDucking = 80;
   private activeAnnouncements = 0;
   private restoreTimeout: NodeJS.Timeout | null = null;
   private subscribers: Set<Subscriber> = new Set();
   private fadeInterval: NodeJS.Timeout | null = null;
   private errorState: string | null = null;
+  private lastErrorDetail: string | null = null;
+  private autoplayBlocked = false;
   private isTemporarilyPausedByAnnouncement = false;
   private onConfigChange: ((config: MusicConfig) => void) | null = null;
-
-  private audioPresets = [
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3'
-  ];
-
-  private youtubePresets = [
-    'https://www.youtube.com/watch?v=jfKfPfyJRdk',
-    'https://www.youtube.com/watch?v=Dx5_wdKkpBY',
-    'https://www.youtube.com/watch?v=5grNis6L_oI',
-    'https://www.youtube.com/watch?v=y7e-GC6oGIZ',
-    'https://www.youtube.com/watch?v=vV77mrc3lP0',
-    'https://www.youtube.com/watch?v=4xDzrJKXOOY'
-  ];
 
   // YouTube properties
   private ytPlayer: any = null;
@@ -106,6 +103,7 @@ class MusicController {
   private ytApiLoading = false;
   private ytInitPromise: Promise<void> | null = null;
   private ytLoadedUrl: string | null = null;
+  private loadingTimeout: NodeJS.Timeout | null = null;
 
   // Autoplay, Keep-Alive, & Progress Tracking properties
   private autoplayPending = false;
@@ -147,7 +145,6 @@ class MusicController {
     }
   }
 
-  // 1. Auto-play trigger & User-gesture fallbacks
   public triggerAutoplay() {
     if (this.autoplayHasFired) return;
     if (!this.config.enabled || !this.config.integratedEnabled || !this.config.integratedUrl) return;
@@ -155,10 +152,7 @@ class MusicController {
     console.log("Attempting background music autoplay...");
     this.autoplayHasFired = true;
 
-    // Try playing directly
     this.play();
-
-    // Setup listeners that will play on first user interaction as fallback
     this.autoplayPending = true;
     this.setupAutoplayListeners();
   }
@@ -172,6 +166,7 @@ class MusicController {
         this.play();
       }
       this.autoplayPending = false;
+      this.autoplayBlocked = false;
       cleanup();
     };
 
@@ -186,12 +181,12 @@ class MusicController {
     window.addEventListener('touchstart', triggerAutoplayOnGesture, true);
   }
 
-  // 2. Playback progress tracking & persistent state
   private startProgressTracking() {
     if (this.progressInterval) clearInterval(this.progressInterval);
     this.progressInterval = setInterval(() => {
       this.saveProgress();
-    }, 3000);
+      this.notify();
+    }, 1000);
   }
 
   private stopProgressTracking() {
@@ -228,8 +223,7 @@ class MusicController {
         }
         const duration = typeof this.ytPlayer.getDuration === 'function' ? this.ytPlayer.getDuration() : 0;
         
-        // If we are near the end of the video, don't save progress near the boundary
-        if (duration > 0 && duration - time < 8) {
+        if (duration > 0 && duration - time < 5) {
           return;
         }
 
@@ -265,7 +259,6 @@ class MusicController {
     return null;
   }
 
-  // 3. Network Restoration Handler
   private setupNetworkListeners() {
     if (typeof window === 'undefined') return;
 
@@ -281,12 +274,11 @@ class MusicController {
     });
   }
 
-  // 4. Daily Keep-Alive and Tab Throttling Recovery Heartbeat
   private startKeepAlive() {
     if (this.keepAliveInterval) clearInterval(this.keepAliveInterval);
     this.keepAliveInterval = setInterval(() => {
       this.checkKeepAlive();
-    }, 8000); // Check every 8 seconds
+    }, 8000);
   }
 
   private stopKeepAlive() {
@@ -302,7 +294,7 @@ class MusicController {
     if (this.activeAnnouncements > 0 || this.isTemporarilyPausedByAnnouncement) return;
 
     const shouldBePlaying = localStorage.getItem('music_should_be_playing') === 'true';
-    if (shouldBePlaying && !this.isPlaying) {
+    if (shouldBePlaying && !this.isPlaying && !this.isLoading && !this.errorState && !this.autoplayBlocked) {
       console.log('Keep-alive heartbeat: Music was supposed to be playing but is stopped. Re-triggering...');
       this.play();
     }
@@ -327,14 +319,15 @@ class MusicController {
       this.audio = new Audio();
       this.audio.loop = this.config.infinitePlay;
       
-      // Sync initial volume
       this.audio.volume = this.config.integratedVolume / 100;
       this.originalVolumeBeforeDucking = this.config.integratedVolume;
 
-      // Listeners
       this.audio.onplay = () => {
         this.isPlaying = true;
+        this.isLoading = false;
         this.errorState = null;
+        this.lastErrorDetail = null;
+        this.autoplayBlocked = false;
         this.notify();
       };
 
@@ -357,11 +350,13 @@ class MusicController {
       this.audio.onerror = () => {
         if (!this.audio?.src || this.audio.src === window.location.href) return;
         console.warn('Music controller audio error');
-        this.errorState = 'No se pudo cargar la música. Verifica la URL o formato de audio.';
+        this.errorState = 'No se pudo cargar el archivo de audio. Verifica la URL.';
+        this.lastErrorDetail = 'Audio element error event fired.';
         this.isPlaying = false;
+        this.isLoading = false;
         this.notify();
       };
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Failed to initialize Audio Element:', err);
     }
   }
@@ -399,7 +394,6 @@ class MusicController {
         resolve();
       };
 
-      // Poll as backup
       const interval = setInterval(() => {
         if (window.YT && window.YT.Player) {
           clearInterval(interval);
@@ -407,6 +401,59 @@ class MusicController {
           resolve();
         }
       }, 100);
+    });
+  }
+
+  private startLoadingTimeout() {
+    this.clearLoadingTimeout();
+    this.isLoading = true;
+    this.loadingTimeout = setTimeout(() => {
+      if (this.isLoading && !this.isPlaying) {
+        console.warn("YouTube video load timed out (>12s)");
+        this.isLoading = false;
+        this.errorState = "El vídeo está tardando demasiado en cargar.";
+        this.lastErrorDetail = "Excedido el tiempo de espera de respuesta del reproductor de YouTube.";
+        this.notify();
+      }
+    }, 12000);
+  }
+
+  private clearLoadingTimeout() {
+    if (this.loadingTimeout) {
+      clearTimeout(this.loadingTimeout);
+      this.loadingTimeout = null;
+    }
+  }
+
+  public recoverPlayer(): Promise<void> {
+    console.log("Recovering YouTube player...");
+    if (this.ytPlayer && typeof this.ytPlayer.destroy === 'function') {
+      try {
+        this.ytPlayer.destroy();
+      } catch (e) {}
+    }
+    this.ytPlayer = null;
+    this.ytReady = false;
+    this.ytInitPromise = null;
+    this.ytLoadedUrl = null;
+    this.clearLoadingTimeout();
+    
+    const container = document.getElementById('yt-music-player-container');
+    if (container) {
+      container.innerHTML = '<div id="yt-player-target" style="width: 100%; height: 100%;"></div>';
+    } else {
+      this.ensureWrapperCreated();
+    }
+
+    this.errorState = null;
+    this.lastErrorDetail = null;
+    this.isLoading = false;
+    
+    return this.initYouTubePlayer().then(() => {
+      if (this.isPlaying) {
+        this.play();
+      }
+      this.notify();
     });
   }
 
@@ -420,16 +467,13 @@ class MusicController {
         this.ensureWrapperCreated();
 
         let { videoId, playlistId } = parseYouTubeUrl(this.config.integratedUrl);
-        if (videoId && !playlistId) {
-          playlistId = 'RD' + videoId;
-        }
 
         const playerVars: any = {
           autoplay: 0,
-          controls: 1, // Enable native controls
-          enablejsapi: 1, // Enable YouTube IFrame API control
+          controls: 1,
+          enablejsapi: 1,
           disablekb: 0,
-          fs: 1, // Enable fullscreen button
+          fs: 1,
           loop: this.config.infinitePlay ? 1 : 0,
           modestbranding: 1,
           rel: 0,
@@ -455,25 +499,29 @@ class MusicController {
                   if (playlistId && typeof this.ytPlayer.setShuffle === 'function') {
                     this.ytPlayer.setShuffle(this.config.shuffle);
                   }
-                } catch (e) {
-                  console.warn('Failed to set volume/shuffle onReady:', e);
-                }
+                } catch (e) {}
                 resolve();
               },
               onStateChange: (event: any) => {
-                // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0, CUED = 5
-                if (event.data === 1) {
+                // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0, CUED = 5, BUFFERING = 3
+                if (event.data === 1) { // PLAYING
                   this.isPlaying = true;
+                  this.isLoading = false;
+                  this.clearLoadingTimeout();
                   this.errorState = null;
+                  this.lastErrorDetail = null;
+                  this.autoplayBlocked = false;
                   this.startProgressTracking();
-                } else if (event.data === 2) {
+                } else if (event.data === 2) { // PAUSED
                   if (!this.isTemporarilyPausedByAnnouncement) {
                     this.isPlaying = false;
                     this.stopProgressTracking();
                     this.saveProgress();
                   }
-                } else if (event.data === 0) {
-                  // Ended
+                } else if (event.data === 5) { // CUED
+                  this.isLoading = false;
+                  this.clearLoadingTimeout();
+                } else if (event.data === 0) { // ENDED
                   this.stopProgressTracking();
                   if (this.config.infinitePlay) {
                     if (playlistId) {
@@ -481,7 +529,7 @@ class MusicController {
                         const index = this.ytPlayer.getPlaylistIndex();
                         const list = this.ytPlayer.getPlaylist();
                         if (list && index === list.length - 1) {
-                          this.ytPlayer.playVideoAt(0); // Loop playlist
+                          this.ytPlayer.playVideoAt(0);
                         } else {
                           this.ytPlayer.nextVideo();
                         }
@@ -501,53 +549,41 @@ class MusicController {
                 this.notify();
               },
               onError: (err: any) => {
-                console.warn('YouTube Player error:', err);
+                console.warn('YouTube Player error code:', err?.data);
+                this.isLoading = false;
+                this.clearLoadingTimeout();
                 let errMsg = 'Ocurrió un error con el reproductor de YouTube.';
+                let detail = `Código de error de YouTube: ${err?.data}`;
+
                 if (err.data === 101 || err.data === 150) {
-                  errMsg = 'Este vídeo no permite reproducción incrustada fuera de YouTube. Saltando al siguiente...';
+                  errMsg = 'Este vídeo no permite reproducción integrada fuera de YouTube.';
+                  detail = 'Restricción de inserción del propietario del vídeo (error 101/150).';
                 } else if (err.data === 100) {
-                  errMsg = 'El vídeo de YouTube no existe o es privado. Saltando al siguiente...';
+                  errMsg = 'El vídeo de YouTube no existe, fue eliminado o es privado.';
+                  detail = 'Vídeo no encontrado o privado (error 100).';
                 } else if (err.data === 2) {
-                  errMsg = 'Enlace de YouTube inválido. Saltando al siguiente...';
+                  errMsg = 'Enlace de YouTube inválido o parámetro erróneo.';
+                  detail = 'Identificador de vídeo no válido (error 2).';
+                } else if (err.data === 5) {
+                  errMsg = 'Error de reproducción HTML5 en YouTube.';
+                  detail = 'Error en el reproductor HTML5 interno de YouTube (error 5).';
                 }
+
                 this.errorState = errMsg;
-                this.notify();
-
-                // Auto-skip to the next video if playing a playlist
-                if (this.ytPlayer && typeof this.ytPlayer.getPlaylist === 'function') {
-                  const list = this.ytPlayer.getPlaylist();
-                  if (list && list.length > 1) {
-                    console.log('Error in video. Attempting to skip to the next in 2s...');
-                    setTimeout(() => {
-                      if (this.config.integratedEnabled) {
-                        try {
-                          const currentIndex = this.ytPlayer.getPlaylistIndex();
-                          if (currentIndex === list.length - 1) {
-                            this.ytPlayer.playVideoAt(0);
-                          } else {
-                            this.ytPlayer.nextVideo();
-                          }
-                          this.isPlaying = true;
-                          this.errorState = null;
-                          this.notify();
-                        } catch (e) {
-                          console.warn('Failed to skip video on error:', e);
-                        }
-                      }
-                    }, 2000);
-                    return;
-                  }
-                }
-
+                this.lastErrorDetail = detail;
                 this.isPlaying = false;
                 this.stopProgressTracking();
                 this.notify();
               }
             }
           });
-        } catch (e) {
+        } catch (e: any) {
           console.warn('Error creating YT.Player:', e);
-          this.ytInitPromise = null; // Reset to allow retry
+          this.ytInitPromise = null;
+          this.isLoading = false;
+          this.clearLoadingTimeout();
+          this.errorState = 'Error al inicializar el marco del reproductor de YouTube.';
+          this.lastErrorDetail = e?.message || String(e);
           reject(e);
         }
       });
@@ -561,7 +597,6 @@ class MusicController {
     const urlChanged = this.config.integratedUrl !== newConfig.integratedUrl;
     const shuffleChanged = this.config.shuffle !== newConfig.shuffle;
     
-    // Map legacy 'ducking' to 'duck20'
     let targetMode = newConfig.mode;
     if (targetMode === 'ducking') targetMode = 'duck20';
 
@@ -575,6 +610,10 @@ class MusicController {
       integratedEnabled: newConfig.integratedEnabled,
       integratedUrl: newConfig.integratedUrl,
       integratedVolume: newConfig.integratedVolume,
+      apiKey: newConfig.apiKey || this.config.apiKey,
+      favorites: newConfig.favorites || this.config.favorites || [],
+      history: newConfig.history || this.config.history || [],
+      customPlaylists: newConfig.customPlaylists || this.config.customPlaylists || []
     };
 
     if (this.audio) {
@@ -592,9 +631,6 @@ class MusicController {
         this.initYouTubePlayer().then(() => {
           if (this.ytPlayer && this.ytReady) {
             let { videoId, playlistId } = parseYouTubeUrl(this.config.integratedUrl);
-            if (videoId && !playlistId) {
-              playlistId = 'RD' + videoId;
-            }
             const wasPlaying = this.isPlaying;
             
             if (shuffleChanged) {
@@ -603,17 +639,16 @@ class MusicController {
               } catch (e) {}
             }
 
-            // Cue or load if the URL changed OR if it hasn't been loaded in this player instance yet
             if (urlChanged || !this.ytLoadedUrl || this.ytLoadedUrl !== this.config.integratedUrl) {
               this.ytLoadedUrl = this.config.integratedUrl;
               
-              // Load saved playback progress if configured
               const saved = this.config.resumePlaylistProgress !== false ? this.getSavedProgress() : null;
               const savedIndex = saved ? saved.index : 0;
               const savedTime = saved ? saved.time : 0;
 
               if (playlistId) {
                 if (wasPlaying) {
+                  this.startLoadingTimeout();
                   this.ytPlayer.loadPlaylist({
                     listType: 'playlist',
                     list: playlistId,
@@ -630,6 +665,7 @@ class MusicController {
                 }
               } else if (videoId) {
                 if (wasPlaying) {
+                  this.startLoadingTimeout();
                   this.ytPlayer.loadVideoById({
                     videoId: videoId,
                     startSeconds: savedTime
@@ -646,9 +682,7 @@ class MusicController {
             if (!this.isDucked) {
               try {
                 this.ytPlayer.setVolume(this.config.integratedVolume);
-              } catch (e) {
-                console.warn('Failed to set YouTube volume:', e);
-              }
+              } catch (e) {}
               this.originalVolumeBeforeDucking = this.config.integratedVolume;
             }
           }
@@ -671,9 +705,7 @@ class MusicController {
             this.audio.src = this.config.integratedUrl;
             this.audio.load();
             if (wasPlaying) {
-              this.audio.play().catch(err => {
-                console.warn('Audio resume failed:', err);
-              });
+              this.audio.play().catch(err => console.warn('Audio resume failed:', err));
             }
           }
 
@@ -707,11 +739,25 @@ class MusicController {
   public getState(): MusicPlayerState {
     const isYT = this.isYouTubeUrl(this.config.integratedUrl);
     let vol = this.config.integratedVolume;
+    let title = this.getTrackTitle();
+    let channel = '';
+    let duration = 0;
+    let currentTime = 0;
 
     if (isYT) {
       if (this.ytPlayer && this.ytReady) {
         try {
           vol = this.ytPlayer.getVolume();
+          duration = typeof this.ytPlayer.getDuration === 'function' ? this.ytPlayer.getDuration() : 0;
+          currentTime = typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
+          
+          if (typeof this.ytPlayer.getVideoData === 'function') {
+            const data = this.ytPlayer.getVideoData();
+            if (data) {
+              if (data.title) title = data.title;
+              if (data.author) channel = data.author;
+            }
+          }
         } catch (e) {
           vol = this.config.integratedVolume;
         }
@@ -719,22 +765,34 @@ class MusicController {
     } else {
       if (this.audio) {
         vol = Math.round(this.audio.volume * 100);
+        duration = this.audio.duration || 0;
+        currentTime = this.audio.currentTime || 0;
       }
     }
 
+    let { videoId } = parseYouTubeUrl(this.config.integratedUrl);
+    let thumbnail = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '';
+
     return {
       isPlaying: this.isPlaying,
+      isLoading: this.isLoading,
       isDucked: this.isDucked,
       currentVolume: vol,
       error: this.errorState,
+      lastErrorDetail: this.lastErrorDetail,
       activeUrl: this.config.integratedUrl,
       isYouTube: isYT,
-      trackTitle: this.getTrackTitle(),
+      trackTitle: title,
+      channelTitle: channel,
+      thumbnailUrl: thumbnail,
+      duration,
+      currentTime,
+      autoplayBlocked: this.autoplayBlocked
     };
   }
 
   public play() {
-    if (!this.config.integratedEnabled) return;
+    if (!this.config.integratedEnabled || !this.config.integratedUrl) return;
 
     if (typeof window !== 'undefined') {
       localStorage.setItem('music_should_be_playing', 'true');
@@ -748,12 +806,11 @@ class MusicController {
         this.audio.pause();
       }
 
+      this.startLoadingTimeout();
+
       this.initYouTubePlayer().then(() => {
         if (this.ytPlayer && this.ytReady) {
           let { videoId, playlistId } = parseYouTubeUrl(this.config.integratedUrl);
-          if (videoId && !playlistId) {
-            playlistId = 'RD' + videoId;
-          }
           
           const saved = this.config.resumePlaylistProgress !== false ? this.getSavedProgress() : null;
           const savedIndex = saved ? saved.index : 0;
@@ -797,12 +854,16 @@ class MusicController {
 
           this.isPlaying = true;
           this.errorState = null;
+          this.lastErrorDetail = null;
           this.startProgressTracking();
           this.notify();
         }
       }).catch(err => {
         console.warn('YouTube play failed:', err);
-        this.errorState = 'No se pudo iniciar el reproductor de YouTube.';
+        this.isLoading = false;
+        this.clearLoadingTimeout();
+        this.errorState = 'No se pudo iniciar la reproducción en YouTube.';
+        this.lastErrorDetail = err?.message || String(err);
         this.notify();
       });
     } else {
@@ -819,7 +880,6 @@ class MusicController {
         this.audio.src = this.config.integratedUrl;
         this.audio.load();
 
-        // Load saved progress if configured
         const saved = this.config.resumePlaylistProgress !== false ? this.getSavedProgress() : null;
         if (saved && saved.time > 0) {
           this.audio.currentTime = saved.time;
@@ -828,12 +888,22 @@ class MusicController {
 
       this.audio.play().then(() => {
         this.isPlaying = true;
+        this.isLoading = false;
         this.errorState = null;
+        this.lastErrorDetail = null;
+        this.autoplayBlocked = false;
         this.startProgressTracking();
         this.notify();
       }).catch(err => {
         console.warn('Audio play failed:', err);
-        this.errorState = 'Fallo de reproducción. Activa el sonido o haz clic en la página.';
+        this.isLoading = false;
+        if (err.name === 'NotAllowedError') {
+          this.autoplayBlocked = true;
+          this.errorState = null;
+        } else {
+          this.errorState = 'Fallo de reproducción. Activa el sonido o haz clic en la página.';
+          this.lastErrorDetail = err?.message || String(err);
+        }
         this.notify();
       });
     }
@@ -841,6 +911,8 @@ class MusicController {
 
   public pause() {
     this.isTemporarilyPausedByAnnouncement = false;
+    this.clearLoadingTimeout();
+    this.isLoading = false;
     
     if (typeof window !== 'undefined') {
       localStorage.setItem('music_should_be_playing', 'false');
@@ -850,7 +922,9 @@ class MusicController {
 
     if (isYT) {
       if (this.ytPlayer && this.ytReady) {
-        this.ytPlayer.pauseVideo();
+        try {
+          this.ytPlayer.pauseVideo();
+        } catch (e) {}
       }
     } else {
       if (this.audio) {
@@ -866,57 +940,31 @@ class MusicController {
 
   public next() {
     const isYT = this.isYouTubeUrl(this.config.integratedUrl);
-    if (isYT) {
-      let { videoId, playlistId } = parseYouTubeUrl(this.config.integratedUrl);
-      if (videoId && !playlistId) {
-        playlistId = 'RD' + videoId;
+    if (isYT && this.ytPlayer && this.ytReady && typeof this.ytPlayer.nextVideo === 'function') {
+      try {
+        this.ytPlayer.nextVideo();
+        setTimeout(() => this.notify(), 800);
+        return;
+      } catch (e) {
+        console.warn('Playlist next video skip failed:', e);
       }
-      if (playlistId && this.ytPlayer && this.ytReady && typeof this.ytPlayer.nextVideo === 'function') {
-        try {
-          this.ytPlayer.nextVideo();
-          setTimeout(() => this.notify(), 800);
-          return;
-        } catch (e) {
-          console.warn('Playlist next video skip failed, falling back to preset cycling:', e);
-        }
-      }
-      const currentIndex = this.youtubePresets.indexOf(this.config.integratedUrl);
-      const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % this.youtubePresets.length;
-      this.changeTrack(this.youtubePresets[nextIndex]);
-    } else {
-      const currentIndex = this.audioPresets.indexOf(this.config.integratedUrl);
-      const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % this.audioPresets.length;
-      this.changeTrack(this.audioPresets[nextIndex]);
     }
   }
 
   public prev() {
     const isYT = this.isYouTubeUrl(this.config.integratedUrl);
-    if (isYT) {
-      let { videoId, playlistId } = parseYouTubeUrl(this.config.integratedUrl);
-      if (videoId && !playlistId) {
-        playlistId = 'RD' + videoId;
+    if (isYT && this.ytPlayer && this.ytReady && typeof this.ytPlayer.previousVideo === 'function') {
+      try {
+        this.ytPlayer.previousVideo();
+        setTimeout(() => this.notify(), 800);
+        return;
+      } catch (e) {
+        console.warn('Playlist prev video skip failed:', e);
       }
-      if (playlistId && this.ytPlayer && this.ytReady && typeof this.ytPlayer.previousVideo === 'function') {
-        try {
-          this.ytPlayer.previousVideo();
-          setTimeout(() => this.notify(), 800);
-          return;
-        } catch (e) {
-          console.warn('Playlist prev video skip failed, falling back to preset cycling:', e);
-        }
-      }
-      const currentIndex = this.youtubePresets.indexOf(this.config.integratedUrl);
-      const prevIndex = currentIndex === -1 ? 0 : (currentIndex - 1 + this.youtubePresets.length) % this.youtubePresets.length;
-      this.changeTrack(this.youtubePresets[prevIndex]);
-    } else {
-      const currentIndex = this.audioPresets.indexOf(this.config.integratedUrl);
-      const prevIndex = currentIndex === -1 ? 0 : (currentIndex - 1 + this.audioPresets.length) % this.audioPresets.length;
-      this.changeTrack(this.audioPresets[prevIndex]);
     }
   }
 
-  private changeTrack(newUrl: string) {
+  public changeTrack(newUrl: string) {
     const wasPlaying = this.isPlaying;
     this.config.integratedUrl = newUrl;
     
@@ -941,25 +989,13 @@ class MusicController {
           }
         } catch (e) {}
       }
-      if (this.config.integratedUrl.includes('jfKfPfyJRdk')) return '☕ Lofi Girl (Chill Beats)';
-      if (this.config.integratedUrl.includes('Dx5_wdKkpBY')) return '🎷 Cafe Smooth Jazz';
-      if (this.config.integratedUrl.includes('5grNis6L_oI')) return '🏖️ Lounge Bossa Nova';
-      if (this.config.integratedUrl.includes('y7e-GC6oGIZ')) return '🎹 Relaxing Classical Piano';
-      if (this.config.integratedUrl.includes('vV77mrc3lP0')) return '🍔 Upbeat Restaurant Pop';
-      if (this.config.integratedUrl.includes('4xDzrJKXOOY')) return '🌌 Atmospheric Synthwave';
-      
-      return "Video de YouTube";
+      return "Contenido de YouTube";
     } else {
       const url = this.config.integratedUrl;
-      if (url.includes('SoundHelix-Song-1.mp3')) return '☕ Café Lofi';
-      if (url.includes('SoundHelix-Song-4.mp3')) return '🎷 Jazz Restaurante';
-      if (url.includes('SoundHelix-Song-8.mp3')) return '🛋️ Chillout Lounge';
-      if (url.includes('SoundHelix-Song-12.mp3')) return '🌧️ Lluvia Relajante';
-      
       try {
         const decoded = decodeURIComponent(url);
         const filename = decoded.substring(decoded.lastIndexOf('/') + 1);
-        return filename || "Música Ambiental";
+        return filename || "Música de fondo";
       } catch (e) {
         return "Música de fondo";
       }
@@ -973,7 +1009,9 @@ class MusicController {
     if (!this.isDucked) {
       if (isYT) {
         if (this.ytPlayer && this.ytReady) {
-          this.ytPlayer.setVolume(volume);
+          try {
+            this.ytPlayer.setVolume(volume);
+          } catch (e) {}
         }
       } else {
         if (this.audio) {
@@ -1015,7 +1053,7 @@ class MusicController {
       this.restoreTimeout = setTimeout(() => {
         this.restoreMusicMitigation();
         this.restoreTimeout = null;
-      }, 1000); // Wait 1 second before restoring music
+      }, 1000);
     }
   }
 
@@ -1028,7 +1066,9 @@ class MusicController {
       this.isTemporarilyPausedByAnnouncement = true;
       if (isYT) {
         if (this.ytPlayer && this.ytReady) {
-          this.ytPlayer.pauseVideo();
+          try {
+            this.ytPlayer.pauseVideo();
+          } catch (e) {}
         }
       } else {
         if (this.audio) {
@@ -1038,11 +1078,10 @@ class MusicController {
       this.isDucked = false;
       this.notify();
     } else {
-      // Ducking mode (duck20, duck40, duck60)
       this.isDucked = true;
       this.originalVolumeBeforeDucking = this.config.integratedVolume;
       
-      let multiplier = 0.20; // Default duck20
+      let multiplier = 0.20;
       if (this.config.mode === 'duck40') multiplier = 0.40;
       if (this.config.mode === 'duck60') multiplier = 0.60;
 
@@ -1056,11 +1095,12 @@ class MusicController {
 
     if (this.config.mode === 'pause') {
       if (this.isTemporarilyPausedByAnnouncement && this.config.integratedEnabled) {
-        // Only resume automatically if autoResume is enabled!
         if (this.config.autoResume) {
           if (isYT) {
             if (this.ytPlayer && this.ytReady) {
-              this.ytPlayer.playVideo();
+              try {
+                this.ytPlayer.playVideo();
+              } catch (e) {}
             }
           } else {
             if (this.audio) {
@@ -1076,7 +1116,6 @@ class MusicController {
       this.isDucked = false;
       this.notify();
     } else {
-      // Ducking modes (duck20, duck40, duck60)
       this.isDucked = false;
       if (this.config.autoResume) {
         this.fadeVolume(this.originalVolumeBeforeDucking, 1000);
@@ -1110,7 +1149,9 @@ class MusicController {
 
       if (isYT) {
         if (this.ytPlayer && this.ytReady) {
-          this.ytPlayer.setVolume(clampedVolPercent);
+          try {
+            this.ytPlayer.setVolume(clampedVolPercent);
+          } catch (e) {}
         }
       } else {
         if (this.audio) {
@@ -1126,7 +1167,9 @@ class MusicController {
         
         if (isYT) {
           if (this.ytPlayer && this.ytReady) {
-            this.ytPlayer.setVolume(targetVolPercent);
+            try {
+              this.ytPlayer.setVolume(targetVolPercent);
+            } catch (e) {}
           }
         } else {
           if (this.audio) {

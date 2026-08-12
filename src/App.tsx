@@ -25,6 +25,7 @@ import SettingsPanel from './components/SettingsPanel';
 import HistoryPanel from './components/HistoryPanel';
 import StatisticsPanel from './components/StatisticsPanel';
 import BackgroundMusicPlayer from './components/BackgroundMusicPlayer';
+import { YouTubeErrorBoundary } from './components/YouTubeErrorBoundary';
 import DevicesPanel from './components/DevicesPanel';
 import PublicDisplayView from './components/PublicDisplayView';
 import ServerConsoleView from './components/ServerConsoleView';
@@ -401,7 +402,7 @@ export default function App() {
   const selectedWaitingTicketIdRef = useRef<string | null>(null);
   const selectedPendingTicketIdRef = useRef<string | null>(null);
   const selectedMissingTicketIdRef = useRef<string | null>(null);
-  const lastFocusedListRef = useRef<'waiting' | 'pending' | 'missing'>('waiting');
+  const lastFocusedListRef = useRef<'waiting' | 'pending' | 'missing' | 'ready'>('waiting');
 
   const authorizedDevicesRef = useRef(authorizedDevices);
   const deauthorizedDeviceIdsRef = useRef(deauthorizedDeviceIds);
@@ -860,7 +861,7 @@ export default function App() {
                 lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
               } : d));
             }
-          } else if (isPublicDisplay || appConfigRef.current?.autoApprovePublicDisplays) {
+          } else if (isPublicDisplay || (appConfigRef.current as any)?.autoApprovePublicDisplays) {
             // Auto-authorize Public Display TV screens so they connect instantly without manual popup!
             const newDevice = {
               id: data.deviceId,
@@ -1188,7 +1189,13 @@ export default function App() {
         handleAddTicket(payload.number, payload.fromOcr, payload.createdByDevice || clientName);
         break;
       case 'add_direct_waiting':
-        handleAddDirectWaitingTicket(payload.number, payload.createdByDevice || clientName);
+        handleAddDirectWaitingTicket(payload.number, payload.createdByDevice || clientName, payload.source);
+        break;
+      case 'clear_waiting_list':
+        handleClearWaitingList();
+        break;
+      case 'clear_ready_list':
+        handleClearReadyList();
         break;
       case 'add_direct_pending':
         handleAddDirectPendingTicket(payload.number, payload.createdByDevice || clientName);
@@ -2585,9 +2592,10 @@ export default function App() {
     forceRefocusInput();
   };
 
-  const handleAddDirectWaitingTicket = async (number: string, createdByDevice?: string) => {
+  const handleAddDirectWaitingTicket = async (number: string, createdByDevice?: string, source?: string) => {
     const creator = createdByDevice || deviceName || 'Tablet';
-    if (sendClientAction('add_direct_waiting', { number, createdByDevice: creator })) return;
+    const ticketSource = source || (createdByDevice?.toLowerCase().includes('hiopos') ? 'HIOPOS' : 'MANUAL');
+    if (sendClientAction('add_direct_waiting', { number, createdByDevice: creator, source: ticketSource })) return;
     const normalizedNum = String(parseInt(number, 10));
 
     // Guard: check for active or waiting duplicates
@@ -2595,6 +2603,9 @@ export default function App() {
       (t) => t.number === normalizedNum && (t.status === 'active' || t.status === 'waiting')
     );
     if (isDuplicate) {
+      if (deviceMode === 'server') {
+        addServerLog(`Ticket #${normalizedNum} (${ticketSource}) duplicado ignorado.`, 'warn');
+      }
       forceRefocusInput();
       return;
     }
@@ -2605,11 +2616,16 @@ export default function App() {
       createdAt: Date.now(),
       status: 'waiting',
       createdByDevice: creator,
+      source: ticketSource,
     };
 
     const updatedTickets = [...tickets, newTicket];
     setTickets(updatedTickets);
     await dbSaveTicket(newTicket);
+    triggerConfigSavedToast(`✔ Ticket #${normalizedNum} añadido a Espera (${creator})`);
+    if (deviceMode === 'server') {
+      addServerLog(`Ticket #${normalizedNum} (${ticketSource}) -> LISTA DE ESPERA [${creator}].`, 'info');
+    }
     forceRefocusInput();
   };
 
@@ -2844,7 +2860,7 @@ export default function App() {
 
     setTransitionNotification({
       number: targetTicket.number,
-      type: 'waiting',
+      type: 'waiting' as any,
       id: Date.now(),
     });
 
@@ -3053,17 +3069,40 @@ export default function App() {
     setTickets(tickets.filter((t) => t.status !== status));
   };
 
-  const handleCustomAnnouncement = () => {
-    if (!customTTSInput.trim()) return;
+  const handleCustomAnnouncement = (textToAnnounce?: string) => {
+    const text = (typeof textToAnnounce === 'string' ? textToAnnounce : customTTSInput).trim();
+    if (!text) return;
     musicController.startAnnouncement();
     if (voiceSettings.soundEnabled) {
       playNotificationSound();
     }
-    speakText(customTTSInput.trim(), voiceSettings, undefined, () => {
+    speakText(text, voiceSettings, undefined, () => {
       musicController.endAnnouncement();
     });
-    triggerConfigSavedToast(`Anunciando por voz: "${customTTSInput.trim()}"`);
-    setCustomTTSInput('');
+    triggerConfigSavedToast(`Anunciando por voz: "${text}"`);
+    if (typeof textToAnnounce !== 'string') {
+      setCustomTTSInput('');
+    }
+  };
+
+  const handleClearWaitingList = async () => {
+    if (sendClientAction('clear_waiting_list', {})) return;
+    const waiting = tickets.filter((t) => t.status === 'waiting');
+    for (const t of waiting) {
+      await dbDeleteTicket(t.id);
+    }
+    setTickets((prev) => prev.filter((t) => t.status !== 'waiting'));
+    triggerConfigSavedToast('Cola de espera vaciada.');
+  };
+
+  const handleClearReadyList = async () => {
+    if (sendClientAction('clear_ready_list', {})) return;
+    const ready = tickets.filter((t) => t.status === 'active');
+    for (const t of ready) {
+      await dbDeleteTicket(t.id);
+    }
+    setTickets((prev) => prev.filter((t) => t.status !== 'active'));
+    triggerConfigSavedToast('Lista de pedidos listos vaciada.');
   };
 
   const handleClearQueue = async () => {
@@ -3632,6 +3671,7 @@ export default function App() {
                 activeTicket={activeTicket}
                 onCallNext={handleCallNext}
                 onAddTicket={handleAddTicket}
+                onAddDirectWaitingTicket={handleAddDirectWaitingTicket}
                 onResolveTicket={handleMarkDelivered}
                 onMarkMissing={handleMarkMissing}
                 onRepeatCall={handleRepeatCall}
@@ -3640,6 +3680,8 @@ export default function App() {
                 onCallTicketNow={handleCallTicketNow}
                 onReturnToWaiting={handleReturnToWaiting}
                 onDeleteTicket={handleDeleteTicket}
+                onClearWaitingList={handleClearWaitingList}
+                onClearReadyList={handleClearReadyList}
                 onTogglePriority={handleTogglePriority}
                 selectedReadyTicketId={selectedReadyTicketId}
                 onSelectReadyTicket={setSelectedReadyTicketId}
@@ -3665,6 +3707,7 @@ export default function App() {
                 onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
                 setDeviceMode={setDeviceMode}
                 deviceMode={deviceMode}
+                onCustomAnnouncement={handleCustomAnnouncement}
               />
             )}
 
@@ -3723,7 +3766,7 @@ export default function App() {
                       />
                       <button
                         type="button"
-                        onClick={handleCustomAnnouncement}
+                        onClick={() => handleCustomAnnouncement()}
                         disabled={!customTTSInput.trim()}
                         className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-bold text-[10px] rounded-lg transition-all cursor-pointer shrink-0"
                       >
@@ -3830,6 +3873,7 @@ export default function App() {
                     onToggleWaitlistPause={handleToggleWaitlistPause}
                     onCallNow={handleCallTicketNow}
                     onTogglePriority={handleTogglePriority}
+                    onClearList={handleClearWaitingList}
                   />
                 </div>
 
@@ -3860,6 +3904,7 @@ export default function App() {
                     activeGlowColor={appConfig.activeGlowColor}
                     selectedReadyTicketId={selectedReadyTicketId}
                     onSelectReadyTicket={setSelectedReadyTicketId}
+                    onClearList={handleClearReadyList}
                   />
                 </div>
 
@@ -4210,20 +4255,24 @@ export default function App() {
                 <X size={18} />
               </button>
             </div>
-            <BackgroundMusicPlayer
-              musicConfig={musicConfig}
-              onSaveMusicConfig={handleSaveMusicConfig}
-            />
+            <YouTubeErrorBoundary>
+              <BackgroundMusicPlayer
+                musicConfig={musicConfig}
+                onSaveMusicConfig={handleSaveMusicConfig}
+              />
+            </YouTubeErrorBoundary>
           </div>
         </div>
       )}
 
       {/* Persistent Background Music Integrated Player across all tabs */}
-      {musicConfig.enabled && musicConfig.integratedEnabled && (
-        <BackgroundMusicPlayer
-          musicConfig={musicConfig}
-          onSaveMusicConfig={handleSaveMusicConfig}
-        />
+      {musicConfig.enabled && musicConfig.integratedEnabled && !isMusicModalOpen && (
+        <YouTubeErrorBoundary>
+          <BackgroundMusicPlayer
+            musicConfig={musicConfig}
+            onSaveMusicConfig={handleSaveMusicConfig}
+          />
+        </YouTubeErrorBoundary>
       )}
 
 
