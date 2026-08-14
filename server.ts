@@ -95,6 +95,18 @@ async function startServer() {
   }
   const rooms = new Map<string, Room>();
 
+  // Ensure an active default master room always exists so TV screens can connect instantly
+  const DEFAULT_MASTER_ROOM_CODE = "100000";
+  const defaultMasterRoom: Room = {
+    code: DEFAULT_MASTER_ROOM_CODE,
+    serverName: "PC Servidor Principal",
+    serverSocket: null,
+    clientSockets: new Map(),
+    clientMetadata: new Map(),
+    pendingSockets: new Map(),
+  };
+  rooms.set(DEFAULT_MASTER_ROOM_CODE, defaultMasterRoom);
+
   // Media endpoints for direct high-speed streaming (bypasses heavy WebSocket frames)
   app.post("/api/media/:roomCode/:mediaKey", (req, res) => {
     const { roomCode, mediaKey } = req.params;
@@ -585,7 +597,10 @@ async function startServer() {
       return res.sendStatus(200);
     }
 
-    const room = rooms.get(roomCode);
+    let room = rooms.get(roomCode);
+    if (!room && rooms.size > 0) {
+      room = Array.from(rooms.values())[0];
+    }
     if (!room || !room.media) {
       return res.status(404).send("Room or media cache not found on server");
     }
@@ -669,6 +684,8 @@ async function startServer() {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Pairing-Code");
 
     const rawTicket = req.body?.ticket || req.body?.number || req.body?.ticketNumber || req.query?.ticket;
+    const rawZone = req.body?.zone || req.body?.area || req.body?.station || req.query?.zone || req.query?.area || req.query?.station;
+    const zone = rawZone ? String(rawZone).trim() : "Sin asignar";
     const deviceId = req.body?.deviceId || req.body?.device_id || req.headers["x-device-id"] || "HIOPOS-01";
     const source = req.body?.source || "HIOPOS";
     const method = req.body?.method || "accessibility";
@@ -706,18 +723,35 @@ async function startServer() {
     hioposState.lastConnectedTime = now;
     hioposState.lastDeviceId = String(deviceId);
 
-    // Duplicate check using current room state tickets (active or waiting)
+    const normNum = String(parseInt(cleanNum, 10) || cleanNum).trim();
+    const normZone = zone && zone.trim() ? zone.trim().toLowerCase() : "manual";
+    const dupKey = `${normNum}|${normZone}`;
+
+    // Multizone duplicate check: ticketNumber + zone among active tickets (waiting/active/pending)
     let isDuplicate = false;
     if (room && room.lastState && Array.isArray(room.lastState.tickets)) {
-      const normNum = String(parseInt(cleanNum, 10));
       isDuplicate = room.lastState.tickets.some((t: any) => {
-        const ticketNorm = String(parseInt(t.number, 10));
-        return (ticketNorm === normNum || t.number === cleanNum) && (t.status === "active" || t.status === "waiting");
+        const ticketNorm = String(parseInt(t.number, 10) || t.number).trim();
+        const isActiveStatus = t.status === "active" || t.status === "waiting" || t.status === "pending";
+        if (!isActiveStatus) return false;
+        if (ticketNorm !== normNum && t.number !== cleanNum) return false;
+
+        // Check if this zone is already present in this active ticket
+        if (Array.isArray(t.zones) && t.zones.length > 0) {
+          return t.zones.some((z: any) => {
+            const zNorm = z.zone ? String(z.zone).trim().toLowerCase() : "manual";
+            return zNorm === normZone;
+          });
+        }
+        const existingZone = t.zone ? String(t.zone).trim().toLowerCase() : "manual";
+        return existingZone === normZone;
       });
     }
 
     if (isDuplicate) {
-      // Record duplicate attempt in logs
+      const logMsg = `Duplicado ignorado: ${cleanNum} / ${zone}`;
+      console.log(`[DEVICE TICKET] Número: ${cleanNum} | Zona: ${zone} | Source: ${source} | Duplicate key: ${dupKey} | Resultado: REJECTED | Reason: duplicate_same_zone`);
+
       hioposState.logs.unshift({
         number: cleanNum,
         success: true,
@@ -725,18 +759,24 @@ async function startServer() {
         timestamp: now,
         timeStr,
         deviceId: String(deviceId),
-        error: "Ticket ya está en la cola (duplicado ignorado)"
+        error: logMsg
       });
       if (hioposState.logs.length > 50) hioposState.logs.pop();
 
-      console.log(`[HIOPOS API] Ticket #${cleanNum} recibido desde ${deviceId} es DUPLICADO.`);
       return res.json({
+        type: "ticket_received",
+        ticketNumber: cleanNum,
+        zone: zone,
+        accepted: false,
+        reason: "duplicate_same_zone",
         success: true,
         duplicate: true,
         ticket: cleanNum,
-        message: "Ticket ya existe en la lista de espera"
+        message: logMsg
       });
     }
+
+    console.log(`[DEVICE TICKET] Número: ${cleanNum} | Zona: ${zone} | Source: ${source} | Duplicate key: ${dupKey} | Resultado: ACCEPTED`);
 
     // Forward action to PC Server room WebSocket socket
     if (room && room.serverSocket && room.serverSocket.readyState === WebSocket.OPEN) {
@@ -745,15 +785,16 @@ async function startServer() {
         action: "add_direct_waiting",
         payload: {
           number: cleanNum,
+          zone: zone,
           createdByDevice: String(deviceId),
           source: String(source)
         },
         deviceId: String(deviceId),
         deviceName: String(deviceId)
       }));
-      console.log(`[HIOPOS API] Action 'add_direct_waiting' sent to server room ${room.code} for ticket #${cleanNum}`);
+      console.log(`[HIOPOS API] Action 'add_direct_waiting' sent for ticket #${cleanNum} [Zone: ${zone}]`);
     } else {
-      console.warn(`[HIOPOS API] Ticket #${cleanNum} recibido, enviando a cola de espera.`);
+      console.warn(`[HIOPOS API] Ticket #${cleanNum} (${zone}) recibido, enviando a cola de espera.`);
     }
 
     // Update HIOPOS stats
@@ -772,6 +813,7 @@ async function startServer() {
     return res.json({
       success: true,
       ticket: cleanNum,
+      zone: zone,
       source: String(source),
       deviceId: String(deviceId)
     });
@@ -1071,82 +1113,135 @@ async function startServer() {
         }
 
         if (data.type === "register_server") {
-          // Check if a valid, unused 6-digit code is provided
           let code = data.code;
           const serverName = data.serverName || "PC Servidor Principal";
-          if (!code || typeof code !== "string" || !/^\d{6}$/.test(code) || rooms.has(code)) {
-            // Generate unique 6-digit code
-            do {
-              code = Math.floor(100000 + Math.random() * 900000).toString();
-            } while (rooms.has(code));
+          
+          let targetRoom: Room;
+          if (code && rooms.has(code)) {
+            targetRoom = rooms.get(code)!;
+            targetRoom.serverName = serverName;
+            targetRoom.serverSocket = socket;
+          } else {
+            if (!code || typeof code !== "string" || !/^\d{6}$/.test(code)) {
+              // Generate unique 6-digit code or use DEFAULT_MASTER_ROOM_CODE
+              code = DEFAULT_MASTER_ROOM_CODE;
+              if (rooms.has(code) && rooms.get(code)?.serverSocket && rooms.get(code)?.serverSocket !== socket) {
+                do {
+                  code = Math.floor(100000 + Math.random() * 900000).toString();
+                } while (rooms.has(code));
+              }
+            }
+
+            if (rooms.has(code)) {
+              targetRoom = rooms.get(code)!;
+              targetRoom.serverName = serverName;
+              targetRoom.serverSocket = socket;
+            } else {
+              targetRoom = {
+                code,
+                serverName,
+                serverSocket: socket,
+                clientSockets: new Map(),
+                clientMetadata: new Map(),
+                pendingSockets: new Map(),
+              };
+              rooms.set(code, targetRoom);
+            }
           }
 
-          const newRoom: Room = {
-            code,
-            serverName,
-            serverSocket: socket,
-            clientSockets: new Map(),
-            clientMetadata: new Map(),
-            pendingSockets: new Map(),
-          };
-          rooms.set(code, newRoom);
-          currentRoomCode = code;
+          // Transfer any waiting clients from default room if migrating to a new room code
+          if (targetRoom.code !== DEFAULT_MASTER_ROOM_CODE && rooms.has(DEFAULT_MASTER_ROOM_CODE)) {
+            const master = rooms.get(DEFAULT_MASTER_ROOM_CODE)!;
+            for (const [cId, cSock] of master.clientSockets.entries()) {
+              if (!targetRoom.clientSockets.has(cId)) {
+                targetRoom.clientSockets.set(cId, cSock);
+                const meta = master.clientMetadata.get(cId) || { id: cId, name: "Dispositivo", type: "Pantalla Pública" };
+                targetRoom.clientMetadata.set(cId, meta);
+                try {
+                  cSock.send(JSON.stringify({ type: "pairing_success", code: targetRoom.code, deviceId: cId, remember: true }));
+                } catch (e) {}
+              }
+            }
+          }
+
+          currentRoomCode = targetRoom.code;
           isServer = true;
 
-          socket.send(JSON.stringify({ type: "server_registered", code }));
-          console.log(`PC Server registered with pairing code: ${code}, name: ${serverName}`);
+          socket.send(JSON.stringify({ type: "server_registered", code: targetRoom.code }));
+          console.log(`[PC Server Registered] Room code: ${targetRoom.code}, name: ${serverName}, clients attached: ${targetRoom.clientSockets.size}`);
         }
 
         else if (data.type === "register_client") {
           const { code, deviceId, deviceName, deviceType } = data;
-          const room = rooms.get(code);
+          let room = code ? rooms.get(code) : undefined;
 
-          if (room) {
-            // Check if server is still connected
-            if (!room.serverSocket) {
-              socket.send(JSON.stringify({ type: "pairing_failed", reason: "Servidor desconectado" }));
-              socket.close();
-              return;
+          // 1. Auto-match to active room with serverSocket, or default room, or first available room
+          if (!room) {
+            for (const r of rooms.values()) {
+              if (r.serverSocket && r.serverSocket.readyState === WebSocket.OPEN) {
+                room = r;
+                break;
+              }
             }
-
-            currentRoomCode = code;
-            isServer = false;
-            clientId = deviceId;
-
-            // Auto-authorize TV screens and clients matching room code for seamless active connection
-            const existingSocket = room.clientSockets.get(deviceId);
-            if (existingSocket && existingSocket !== socket) {
-              try { existingSocket.close(); } catch (e) {}
+            if (!room && rooms.size > 0) {
+              room = rooms.get(DEFAULT_MASTER_ROOM_CODE) || Array.from(rooms.values())[0];
             }
-            room.clientSockets.set(deviceId, socket);
-            room.clientMetadata.set(deviceId, { id: deviceId, name: deviceName, type: deviceType || "Tablet" });
+          }
 
-            socket.send(JSON.stringify({ 
-              type: "pairing_success", 
-              code, 
-              deviceId,
-              remember: true
-            }));
+          // 2. If somehow still no room, create master room on the fly
+          if (!room) {
+            room = {
+              code: DEFAULT_MASTER_ROOM_CODE,
+              serverName: "PC Servidor Principal",
+              serverSocket: null,
+              clientSockets: new Map(),
+              clientMetadata: new Map(),
+              pendingSockets: new Map(),
+            };
+            rooms.set(DEFAULT_MASTER_ROOM_CODE, room);
+          }
 
-            // Immediately send cached state if available so that the screen is populated instantly
-            if (room.lastState) {
-              socket.send(JSON.stringify(room.lastState));
-              console.log(`[Auto-Approve] Sent cached state directly to auto-connected client: ${deviceId}`);
-            }
+          const activeCode = room.code;
+          currentRoomCode = activeCode;
+          isServer = false;
+          clientId = deviceId;
 
-            // Notify server socket that client connected
+          const isTv = (deviceType === "Pantalla Pública" || (deviceName && String(deviceName).toLowerCase().includes("tv")) || (deviceName && String(deviceName).toLowerCase().includes("pantalla")));
+
+          // Clean up any stale existing socket for same device ID
+          const existingSocket = room.clientSockets.get(deviceId);
+          if (existingSocket && existingSocket !== socket) {
+            try { existingSocket.close(); } catch (e) {}
+          }
+          
+          room.clientSockets.set(deviceId, socket);
+          room.clientMetadata.set(deviceId, { id: deviceId, name: deviceName || (isTv ? "Pantalla TV" : "Tablet"), type: deviceType || (isTv ? "Pantalla Pública" : "Tablet") });
+
+          // Send immediate success confirmation to client/TV
+          socket.send(JSON.stringify({ 
+            type: "pairing_success", 
+            code: activeCode, 
+            deviceId,
+            remember: true
+          }));
+
+          // Immediately send cached state if available so that the screen is populated instantly
+          if (room.lastState) {
+            socket.send(JSON.stringify(room.lastState));
+            console.log(`[Auto-Approve] Sent cached state directly to auto-connected client: ${deviceId}`);
+          }
+
+          // Notify server socket if server is currently connected
+          if (room.serverSocket && room.serverSocket.readyState === WebSocket.OPEN) {
             room.serverSocket.send(JSON.stringify({
               type: "client_connected",
               deviceId,
               deviceName,
-              deviceType: deviceType || "Tablet",
+              deviceType: deviceType || (isTv ? "Pantalla Pública" : "Tablet"),
             }));
-
-            console.log(`Client "${deviceName}" (${deviceType}) auto-connected to room: ${code}`);
-          } else {
-            socket.send(JSON.stringify({ type: "pairing_failed", reason: "Código incorrecto o vencido" }));
-            socket.close();
           }
+
+          console.log(`[Client Connected] "${deviceName}" (${deviceType || 'Client'}) auto-connected to room: ${activeCode} (Server connected: ${!!room.serverSocket})`);
         }
 
         else if (data.type === "auth_decision") {
@@ -1213,6 +1308,48 @@ async function startServer() {
                 deviceId: clientId,
                 deviceName: data.deviceName,
               }));
+            }
+          }
+        }
+
+        else if (data.type === "ticket_detected") {
+          const tNum = String(data.ticketNumber || data.number || "").trim();
+          const tZone = data.zone ? String(data.zone).trim() : "Sin asignar";
+          if (tNum && currentRoomCode) {
+            const room = rooms.get(currentRoomCode);
+            if (room && room.serverSocket) {
+              room.serverSocket.send(JSON.stringify({
+                type: "client_action",
+                action: "add_direct_waiting",
+                payload: {
+                  number: tNum,
+                  zone: tZone,
+                  source: data.source || "HIOPOS",
+                  createdByDevice: data.deviceId || "HIOPOS",
+                  timestamp: data.timestamp || Date.now()
+                },
+                deviceId: clientId,
+                deviceName: data.deviceName || "HIOPOS"
+              }));
+            }
+          }
+        }
+
+        else if (data.type === "ticket_zone_completed") {
+          if (currentRoomCode) {
+            const room = rooms.get(currentRoomCode);
+            if (room) {
+              const eventPayload = JSON.stringify({
+                type: "ticket_zone_completed",
+                ticketNumber: String(data.ticketNumber || data.number || ""),
+                zone: String(data.zone || ""),
+                timestamp: data.timestamp || Date.now()
+              });
+              for (const clientSocket of room.clientSockets.values()) {
+                if (clientSocket.readyState === WebSocket.OPEN) {
+                  clientSocket.send(eventPayload);
+                }
+              }
             }
           }
         }
@@ -1295,32 +1432,52 @@ async function startServer() {
       if (currentRoomCode) {
         const room = rooms.get(currentRoomCode);
         if (room) {
-          if (isServer) {
+          if (isServer && room.serverSocket === socket) {
             // Server disconnected, notify clients and clean up room
             for (const clientSocket of room.clientSockets.values()) {
               if (clientSocket.readyState === WebSocket.OPEN) {
-                clientSocket.send(JSON.stringify({ type: "server_disconnected" }));
+                try {
+                  clientSocket.send(JSON.stringify({ type: "server_disconnected" }));
+                } catch (e) {}
               }
             }
             rooms.delete(currentRoomCode);
             console.log(`PC Server room ${currentRoomCode} closed due to server disconnect.`);
           } else if (clientId) {
-            room.clientSockets.delete(clientId);
-            room.clientMetadata.delete(clientId);
-            if (room.serverSocket && room.serverSocket.readyState === WebSocket.OPEN) {
-              room.serverSocket.send(JSON.stringify({ type: "client_left", deviceId: clientId }));
+            // CRITICAL: Only delete client registration and notify server IF this closing socket
+            // is still the ACTIVE socket registered for this clientId (prevents race conditions on reconnect)
+            if (room.clientSockets.get(clientId) === socket) {
+              room.clientSockets.delete(clientId);
+              room.clientMetadata.delete(clientId);
+              if (room.serverSocket && room.serverSocket.readyState === WebSocket.OPEN) {
+                try {
+                  room.serverSocket.send(JSON.stringify({ type: "client_left", deviceId: clientId }));
+                } catch (e) {}
+              }
+              console.log(`Client ${clientId} disconnected from room ${currentRoomCode}.`);
+            } else {
+              console.log(`Superseded/stale socket for client ${clientId} closed safely without removing active session.`);
             }
-            console.log(`Client tablet ${clientId} disconnected from room ${currentRoomCode}.`);
           }
         }
       }
     });
   });
 
-  // High-performance custom streaming route for background MP4 files
+  // High-performance custom streaming route for background MP4 / WebM files
   // Guarantees proper Content-Type: video/mp4, HTTP 206 Partial Content range request support,
-  // and aggressive caching for smart TVs and browsers.
-  app.get("/*.mp4", (req, res, next) => {
+  // full CORS headers for Samsung TV / Tizen compatibility, and aggressive caching.
+  app.get(/\.(mp4|webm|mov|m4v)$/i, (req, res, next) => {
+    // Add full CORS support headers for absolute compatibility with Samsung Tizen / WebOS
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range, Authorization");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+
     const filename = req.path.split("/").pop() || "";
     const publicPath = path.join(process.cwd(), "public", filename);
     const distPath = path.join(process.cwd(), "dist", filename);

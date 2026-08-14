@@ -62,15 +62,7 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
     // Check general MP4 support
     const canPlayMp4 = tempVideo.canPlayType('video/mp4');
     if (canPlayMp4 === '') {
-      return { canPlay: false, reason: "Navegador no soporta contenedor MP4" };
-    }
-
-    // Check Tizen-specific codec compatibility (AVC / H.264 Main or Baseline profile)
-    const canPlayH264 = tempVideo.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'); // H.264 Baseline, AAC-LC
-    const canPlayH264Main = tempVideo.canPlayType('video/mp4; codecs="avc1.4D401E, mp4a.40.2"'); // H.264 Main, AAC-LC
-
-    if (canPlayH264 === '' && canPlayH264Main === '') {
-      return { canPlay: false, reason: "Navegador no soporta códecs H.264 AVC / AAC-LC" };
+      return { canPlay: false, reason: "Navegador no reporta soporte MIME video/mp4" };
     }
 
     return { canPlay: true };
@@ -158,6 +150,10 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
                 dispatchDiagnostic('keeper-resume-success');
               })
               .catch(err => {
+                if (err.name === 'AbortError' || err.message?.includes('interrupted') || err.message?.includes('load request')) {
+                  console.log("[Tizen Keeper] Play request interrupted by new load request.");
+                  return;
+                }
                 console.warn("[Tizen Keeper] Failed to auto-resume on check:", err);
                 dispatchDiagnostic('keeper-resume-failed', { error: err.message });
               });
@@ -209,6 +205,11 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
           setLastError(null);
           dispatchDiagnostic('play-promise-resolved');
         }).catch((error) => {
+          if (error.name === 'AbortError' || error.message?.includes('interrupted') || error.message?.includes('load request')) {
+            console.log("[ResolvedMedia] Play request interrupted by a new load request.");
+            dispatchDiagnostic('play-promise-interrupted', { error: error.message });
+            return;
+          }
           console.warn("Autoplay was prevented, retrying on user click/interaction:", error);
           setLastError(`Autoplay bloqueado. Toque la pantalla o use el PC.`);
           dispatchDiagnostic('play-promise-rejected', { error: error.message });
@@ -247,6 +248,7 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
       preload="auto"
       autoPlay
       muted
+      defaultMuted
       loop={shouldLoop}
       playsInline
       onCanPlay={() => {
@@ -268,6 +270,17 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
         setIsLoaded(true);
         setHasLoadedOnce(true);
         dispatchDiagnostic('onplay');
+      }}
+      onPlaying={() => {
+        setIsLoaded(true);
+        setHasLoadedOnce(true);
+        dispatchDiagnostic('onplaying');
+      }}
+      onTimeUpdate={() => {
+        if (!isLoaded || !hasLoadedOnce) {
+          setIsLoaded(true);
+          setHasLoadedOnce(true);
+        }
       }}
       onPause={(e) => {
         // Automatically restart if paused and supposed to loop
@@ -332,10 +345,10 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
           }
         }, 3000);
       }}
-      className={`${className} transition-opacity duration-500`}
+      className={`${className} transition-opacity duration-300`}
       style={{
         ...style,
-        opacity: (isLoaded || hasLoadedOnce) ? undefined : 0
+        opacity: style?.opacity !== undefined ? style.opacity : 1
       }}
       {...props}
     />

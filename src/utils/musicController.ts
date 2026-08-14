@@ -145,11 +145,41 @@ class MusicController {
     }
   }
 
+  public playUrl(url: string) {
+    if (!url) return;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('yt_last_video_url', url);
+    }
+    this.setConfig({ ...this.config, integratedUrl: url });
+    setTimeout(() => {
+      this.play();
+    }, 100);
+  }
+
   public triggerAutoplay() {
     if (this.autoplayHasFired) return;
-    if (!this.config.enabled || !this.config.integratedEnabled || !this.config.integratedUrl) return;
+    if (!this.config.enabled || !this.config.integratedEnabled) return;
 
-    console.log("Attempting background music autoplay...");
+    if (typeof window !== 'undefined') {
+      const currentTab = localStorage.getItem('activeTab');
+      if (currentTab === 'tablet') {
+        console.log("Autoplay skipped because app is in Tablet mode.");
+        return;
+      }
+      const isAutoplayEnabled = localStorage.getItem('yt_autoplay_enabled') !== 'false';
+      if (!isAutoplayEnabled) {
+        console.log("Autoplay is disabled by user setting ('Reproducción Automática' off).");
+        return;
+      }
+      const lastUrl = localStorage.getItem('yt_last_video_url');
+      if (lastUrl) {
+        this.config.integratedUrl = lastUrl;
+      }
+    }
+
+    if (!this.config.integratedUrl) return;
+
+    console.log("Attempting background music autoplay with last video:", this.config.integratedUrl);
     this.autoplayHasFired = true;
 
     this.play();
@@ -474,7 +504,6 @@ class MusicController {
           enablejsapi: 1,
           disablekb: 0,
           fs: 1,
-          loop: this.config.infinitePlay ? 1 : 0,
           modestbranding: 1,
           rel: 0,
           showinfo: 1,
@@ -483,6 +512,9 @@ class MusicController {
         if (playlistId) {
           playerVars.listType = 'playlist';
           playerVars.list = playlistId;
+        } else if (videoId && this.config.infinitePlay !== false) {
+          playerVars.listType = 'playlist';
+          playerVars.list = 'RD' + videoId;
         }
 
         try {
@@ -496,7 +528,7 @@ class MusicController {
                 this.ytReady = true;
                 try {
                   this.ytPlayer.setVolume(this.config.integratedVolume);
-                  if (playlistId && typeof this.ytPlayer.setShuffle === 'function') {
+                  if (typeof this.ytPlayer.setShuffle === 'function') {
                     this.ytPlayer.setShuffle(this.config.shuffle);
                   }
                 } catch (e) {}
@@ -512,6 +544,27 @@ class MusicController {
                   this.lastErrorDetail = null;
                   this.autoplayBlocked = false;
                   this.startProgressTracking();
+
+                  // Update current video URL & metadata when YouTube auto-advances to a suggested video
+                  if (typeof this.ytPlayer.getVideoData === 'function') {
+                    try {
+                      const data = this.ytPlayer.getVideoData();
+                      if (data && data.video_id) {
+                        const currentUrl = `https://www.youtube.com/watch?v=${data.video_id}`;
+                        if (this.config.integratedUrl !== currentUrl && !currentUrl.includes('undefined')) {
+                          console.log("🎵 YouTube avanzó automáticamente a un vídeo sugerido:", data.title, currentUrl);
+                          this.config.integratedUrl = currentUrl;
+                          this.ytLoadedUrl = currentUrl;
+                          if (typeof window !== 'undefined') {
+                            localStorage.setItem('yt_last_video_url', currentUrl);
+                          }
+                          if (this.onConfigChange) {
+                            this.onConfigChange({ ...this.config });
+                          }
+                        }
+                      }
+                    } catch (e) {}
+                  }
                 } else if (event.data === 2) { // PAUSED
                   if (!this.isTemporarilyPausedByAnnouncement) {
                     this.isPlaying = false;
@@ -523,22 +576,35 @@ class MusicController {
                   this.clearLoadingTimeout();
                 } else if (event.data === 0) { // ENDED
                   this.stopProgressTracking();
-                  if (this.config.infinitePlay) {
-                    if (playlistId) {
-                      try {
-                        const index = this.ytPlayer.getPlaylistIndex();
-                        const list = this.ytPlayer.getPlaylist();
-                        if (list && index === list.length - 1) {
-                          this.ytPlayer.playVideoAt(0);
-                        } else {
-                          this.ytPlayer.nextVideo();
-                        }
-                      } catch (e) {
-                        this.ytPlayer.playVideo();
+                  if (this.config.infinitePlay !== false) {
+                    let advanced = false;
+                    try {
+                      if (this.ytPlayer && typeof this.ytPlayer.nextVideo === 'function') {
+                        this.ytPlayer.nextVideo();
+                        advanced = true;
                       }
-                    } else {
-                      this.ytPlayer.seekTo(0);
-                      this.ytPlayer.playVideo();
+                    } catch (e) {
+                      console.warn('nextVideo failed on ENDED:', e);
+                    }
+
+                    if (!advanced && this.ytPlayer) {
+                      let { videoId } = parseYouTubeUrl(this.config.integratedUrl);
+                      if (videoId && typeof this.ytPlayer.loadPlaylist === 'function') {
+                        try {
+                          this.ytPlayer.loadPlaylist({
+                            listType: 'playlist',
+                            list: 'RD' + videoId,
+                            index: 1
+                          });
+                          advanced = true;
+                        } catch (e) {}
+                      }
+                    }
+
+                    if (!advanced && this.ytPlayer) {
+                      try {
+                        this.ytPlayer.playVideo();
+                      } catch (e) {}
                     }
                     this.isPlaying = true;
                     this.startProgressTracking();
@@ -664,17 +730,37 @@ class MusicController {
                   });
                 }
               } else if (videoId) {
-                if (wasPlaying) {
-                  this.startLoadingTimeout();
-                  this.ytPlayer.loadVideoById({
-                    videoId: videoId,
-                    startSeconds: savedTime
-                  });
+                if (this.config.infinitePlay !== false) {
+                  try {
+                    if (wasPlaying) {
+                      this.startLoadingTimeout();
+                      this.ytPlayer.loadPlaylist({
+                        listType: 'playlist',
+                        list: 'RD' + videoId,
+                        startSeconds: savedTime
+                      });
+                    } else {
+                      this.ytPlayer.cuePlaylist({
+                        listType: 'playlist',
+                        list: 'RD' + videoId,
+                        startSeconds: savedTime
+                      });
+                    }
+                  } catch (e) {
+                    if (wasPlaying) {
+                      this.startLoadingTimeout();
+                      this.ytPlayer.loadVideoById({ videoId, startSeconds: savedTime });
+                    } else {
+                      this.ytPlayer.cueVideoById({ videoId, startSeconds: savedTime });
+                    }
+                  }
                 } else {
-                  this.ytPlayer.cueVideoById({
-                    videoId: videoId,
-                    startSeconds: savedTime
-                  });
+                  if (wasPlaying) {
+                    this.startLoadingTimeout();
+                    this.ytPlayer.loadVideoById({ videoId, startSeconds: savedTime });
+                  } else {
+                    this.ytPlayer.cueVideoById({ videoId, startSeconds: savedTime });
+                  }
                 }
               }
             }
@@ -826,10 +912,19 @@ class MusicController {
                 startSeconds: savedTime
               });
             } else if (videoId) {
-              this.ytPlayer.loadVideoById({
-                videoId: videoId,
-                startSeconds: savedTime
-              });
+              if (this.config.infinitePlay !== false) {
+                try {
+                  this.ytPlayer.loadPlaylist({
+                    listType: 'playlist',
+                    list: 'RD' + videoId,
+                    startSeconds: savedTime
+                  });
+                } catch (e) {
+                  this.ytPlayer.loadVideoById({ videoId, startSeconds: savedTime });
+                }
+              } else {
+                this.ytPlayer.loadVideoById({ videoId, startSeconds: savedTime });
+              }
             }
           } else {
             const state = typeof this.ytPlayer.getPlayerState === 'function' ? this.ytPlayer.getPlayerState() : -1;
@@ -842,10 +937,19 @@ class MusicController {
                   startSeconds: savedTime
                 });
               } else if (videoId) {
-                this.ytPlayer.loadVideoById({
-                  videoId: videoId,
-                  startSeconds: savedTime
-                });
+                if (this.config.infinitePlay !== false) {
+                  try {
+                    this.ytPlayer.loadPlaylist({
+                      listType: 'playlist',
+                      list: 'RD' + videoId,
+                      startSeconds: savedTime
+                    });
+                  } catch (e) {
+                    this.ytPlayer.loadVideoById({ videoId, startSeconds: savedTime });
+                  }
+                } else {
+                  this.ytPlayer.loadVideoById({ videoId, startSeconds: savedTime });
+                }
               }
             } else {
               this.ytPlayer.playVideo();
@@ -895,6 +999,10 @@ class MusicController {
         this.startProgressTracking();
         this.notify();
       }).catch(err => {
+        if (err.name === 'AbortError' || err.message?.includes('interrupted') || err.message?.includes('load request')) {
+          console.log('Audio play interrupted by new load request.');
+          return;
+        }
         console.warn('Audio play failed:', err);
         this.isLoading = false;
         if (err.name === 'NotAllowedError') {
@@ -940,13 +1048,29 @@ class MusicController {
 
   public next() {
     const isYT = this.isYouTubeUrl(this.config.integratedUrl);
-    if (isYT && this.ytPlayer && this.ytReady && typeof this.ytPlayer.nextVideo === 'function') {
+    if (isYT && this.ytPlayer && this.ytReady) {
       try {
-        this.ytPlayer.nextVideo();
-        setTimeout(() => this.notify(), 800);
-        return;
+        if (typeof this.ytPlayer.nextVideo === 'function') {
+          this.ytPlayer.nextVideo();
+          setTimeout(() => this.notify(), 800);
+          return;
+        }
       } catch (e) {
         console.warn('Playlist next video skip failed:', e);
+      }
+
+      let { videoId } = parseYouTubeUrl(this.config.integratedUrl);
+      if (videoId && typeof this.ytPlayer.loadPlaylist === 'function') {
+        try {
+          this.ytPlayer.loadPlaylist({
+            listType: 'playlist',
+            list: 'RD' + videoId,
+            index: 1
+          });
+          setTimeout(() => this.notify(), 800);
+        } catch (err) {
+          console.warn('Failed loading RD mix on next():', err);
+        }
       }
     }
   }

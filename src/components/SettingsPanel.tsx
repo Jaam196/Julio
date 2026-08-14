@@ -15,6 +15,7 @@ import DevicesPanel from './DevicesPanel';
 import { ThemeSettings } from './ThemeSettings';
 import { DeviceLayoutSettings } from './DeviceLayoutSettings';
 import { exportAppDocumentationAndPromptPDF } from '../utils/export';
+import { runMultiZoneDuplicateTest } from '../utils/ticketUtils';
 
 const DISPLAY_TRANSLATIONS: Record<string, {
   defaultTitle: string;
@@ -217,6 +218,12 @@ export default function SettingsPanel({
   const [sendingTestTicket, setSendingTestTicket] = useState(false);
   const [testTicketResult, setTestTicketResult] = useState<string | null>(null);
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
+  const [duplicateTestResult, setDuplicateTestResult] = useState<{ success: boolean; log: string[] } | null>(null);
+
+  const handleRunDuplicateTest = () => {
+    const res = runMultiZoneDuplicateTest();
+    setDuplicateTestResult(res);
+  };
 
   const fetchHioposStatus = async () => {
     try {
@@ -1329,7 +1336,42 @@ export default function SettingsPanel({
               )}
             </div>
 
-            {/* CONFIGURACIÓN Y DOCUMENTACIÓN API PARA ANDROID */}
+            {/* PRUEBA AUTOMATIZADA DE REGLAS DE DUPLICADOS Multizona */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div>
+                  <h4 className="font-bold text-slate-100 text-base uppercase tracking-wider flex items-center gap-2">
+                    <Zap size={16} className="text-amber-400" />
+                    PRUEBA DE DUPLICADOS MULTIZONA (504 Cocina / 504 Línea)
+                  </h4>
+                  <p className="text-xs text-slate-400">Verifica que "Mismo número + misma zona = Rechazado" y "Mismo número + diferente zona = Aceptado".</p>
+                </div>
+                <button
+                  onClick={handleRunDuplicateTest}
+                  className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs transition-all flex items-center gap-1.5 shadow-lg shadow-amber-600/20 cursor-pointer active:scale-95"
+                >
+                  <Play size={14} />
+                  <span>Ejecutar Test</span>
+                </button>
+              </div>
+
+              {duplicateTestResult && (
+                <div className={`p-4 rounded-xl border font-mono text-xs space-y-2 ${
+                  duplicateTestResult.success 
+                    ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300'
+                    : 'bg-rose-950/30 border-rose-800/60 text-rose-300'
+                }`}>
+                  <div className="font-bold text-sm">
+                    {duplicateTestResult.success ? '✅ RESULTADO DE PRUEBA: PASADA CORRECTAMENTE' : '❌ RESULTADO DE PRUEBA: FALLIDA'}
+                  </div>
+                  <div className="space-y-1 text-[11px] text-slate-300 bg-slate-950/80 p-3 rounded-lg border border-slate-800/80">
+                    {duplicateTestResult.log.map((line, i) => (
+                      <div key={i}>{line}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
               <h4 className="font-bold text-slate-100 text-base flex items-center gap-2">
                 <span>📱 Configuración para la App Android (HIOPOS Reader)</span>

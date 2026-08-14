@@ -173,7 +173,15 @@ export default function PublicDisplayView({
 
   const hasBgVideos = activeVideos.length > 0;
   const currentVideo = hasBgVideos ? activeVideos[currentVideoIndex % activeVideos.length] : null;
-  const currentVideoUrl = currentVideo ? currentVideo.url : appConfig.publicDisplayBgVideo;
+  const currentVideoUrl = currentVideo ? currentVideo.url : (appConfig.publicDisplayBgVideo || (appConfig.publicDisplayBgType === 'video' ? '/demo.mp4' : ''));
+
+  const shouldRenderVideo = Boolean(
+    currentVideoUrl && (
+      appConfig.publicDisplayBgType === 'video' ||
+      !appConfig.publicDisplayBgType ||
+      (appConfig.publicDisplayBgType !== 'image' && (Boolean(appConfig.publicDisplayBgVideo) || activeVideos.length > 0))
+    )
+  );
 
   // Language resolution
   const lang = appConfig.publicDisplayLanguage || 'en';
@@ -286,6 +294,16 @@ export default function PublicDisplayView({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onSelectMode, showExitConfirm]);
+
+  // Active automatic reconnect pulse for Smart TV
+  useEffect(() => {
+    if (pairingStatus !== 'paired' && onForceReconnect) {
+      const timer = setInterval(() => {
+        onForceReconnect();
+      }, 2500);
+      return () => clearInterval(timer);
+    }
+  }, [pairingStatus, onForceReconnect]);
 
   // Standby mode image slideshow indexing
   const activeSlides = (appConfig.publicDisplayStandbyImages || []).filter(img => img.active);
@@ -973,7 +991,7 @@ export default function PublicDisplayView({
             referrerPolicy="no-referrer"
           />
         </div>
-      ) : (appConfig.publicDisplayBgType === 'video' || (!appConfig.publicDisplayBgType && currentVideoUrl)) && currentVideoUrl ? (
+      ) : shouldRenderVideo && currentVideoUrl ? (
         <ResolvedVideo 
           mediaKeyOrUrl={currentVideoUrl}
           onMediaMissing={() => onMediaMissing?.(currentVideo ? `bg_video_${currentVideo.id}` : 'bg_video')}

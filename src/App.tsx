@@ -13,6 +13,7 @@ import {
 } from './utils/db';
 import { speakText, playNotificationSound, triggerVibration, formatAnnouncementText } from './utils/audio';
 import { buildWsUrl, buildApiUrl } from './utils/urlHelper';
+import { getTicketZones, isTicketFullyCompleted, isDuplicateTicket, getTicketZoneKey, normalizeZone, sanitizeAndMergeTickets, getPendingZones } from './utils/ticketUtils';
 
 import ManualInput from './components/ManualInput';
 import ActiveTicket from './components/ActiveTicket';
@@ -166,6 +167,14 @@ export default function App() {
       }
     }
   }, [activeTab, deviceType]);
+
+  // Desactivar el modo YouTube / música únicamente en el Modo Tablet
+  useEffect(() => {
+    if (activeTab === 'tablet') {
+      musicController.pause();
+      setIsMusicModalOpen(false);
+    }
+  }, [activeTab]);
   const [boardSubTab, setBoardSubTab] = useState<'all' | 'control' | 'waiting' | 'ready' | 'missing' | 'recent'>('all');
   const [isDBReady, setIsDBReady] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -212,6 +221,7 @@ export default function App() {
   const urlRole = searchParams?.get('role');
   const urlCode = searchParams?.get('code');
   const isTvUA = typeof navigator !== 'undefined' && /Tizen|SmartTV|SMART-TV|SamsungBrowser|HbbTV|WebOS|webOS|NetCast|BRAVIA|MiTV|AFTB|FireTV|Vidaa|Hisense|Large Screen|CrKey/i.test(navigator.userAgent);
+  const isSamsungTv = typeof navigator !== 'undefined' && /Tizen|SamsungBrowser|SMART-TV.*Samsung/i.test(navigator.userAgent);
 
   // Client-Server and WebSocket states
   const [deviceMode, setDeviceMode] = useState<'local' | 'server' | 'client'>(() => {
@@ -243,7 +253,13 @@ export default function App() {
   });
   const [pairingStatus, setPairingStatus] = useState<'unpaired' | 'pairing' | 'paired' | 'failed' | 'searching'>('unpaired');
   const [deviceName, setDeviceName] = useState<string>(() => {
-    return localStorage.getItem('deviceName') || 'Tablet ' + Math.floor(100 + Math.random() * 900);
+    try {
+      const saved = localStorage.getItem('deviceName');
+      if (saved) return saved;
+    } catch (e) {}
+    if (isSamsungTv) return 'Smart TV Samsung';
+    if (isTvUA || urlRole === 'pantalla' || urlMode === 'public_display') return 'Pantalla TV Pública';
+    return 'Tablet ' + Math.floor(100 + Math.random() * 900);
   });
   const [serverIP, setServerIP] = useState<string>(() => {
     return localStorage.getItem('serverIP') || window.location.host;
@@ -528,6 +544,10 @@ export default function App() {
   // Force cursor refocus automatically back to the fast-ticket-input (cuadro verde)
   const forceRefocusInput = () => {
     setTimeout(() => {
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') && activeEl.id !== 'fast-ticket-input') {
+        return;
+      }
       const input = document.getElementById('fast-ticket-input');
       if (input) {
         (input as HTMLInputElement).focus();
@@ -689,17 +709,23 @@ export default function App() {
     if (socketRef.current) {
       const isSameHost = socketRef.current.url.includes(ip);
       if (!isManual && isSameHost && (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING)) {
-        console.log('WebSocket is already active or connecting. Skipping redundant connect attempt.');
+        console.log('[WS] WebSocket is already active or connecting. Skipping redundant connect attempt.');
         return;
       }
       try {
-        console.log('Closing existing WebSocket to force clean connection/pairing...');
+        console.log('[WS] Cleanly closing superseded WebSocket...');
+        // Detach listeners first so closing old socket doesn't fire spurious onclose/onerror
+        socketRef.current.onopen = null;
+        socketRef.current.onclose = null;
+        socketRef.current.onerror = null;
+        socketRef.current.onmessage = null;
         socketRef.current.close();
       } catch (e) {}
       socketRef.current = null;
     }
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
 
     setPairingStatus('searching');
@@ -710,12 +736,13 @@ export default function App() {
     const socketHost = mode === 'server' ? window.location.host : ip;
     const wsUrl = buildWsUrl(socketHost);
 
-    console.log(`Connecting to WebSocket at ${wsUrl}`);
+    console.log(`[WS] Connecting to WebSocket at ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
 
     ws.onopen = () => {
-      console.log('WebSocket connected');
+      if (socketRef.current !== ws) return; // Ignore if superseded
+      console.log('[WS] WebSocket connected successfully');
       lastMessageReceivedTimeRef.current = Date.now();
       reconnectAttemptsRef.current = 0; // Reset connection attempts on successful connection
 
@@ -724,12 +751,12 @@ export default function App() {
         clearInterval(heartbeatIntervalRef.current);
       }
       heartbeatIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
+        if (socketRef.current === ws && ws.readyState === WebSocket.OPEN) {
           try {
-            ws.send(JSON.stringify({ type: 'ping' }));
+            ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
           } catch (e) {}
         }
-      }, 15000);
+      }, 10000);
 
       if (mode === 'server') {
         const savedCode = localStorage.getItem('pairedCode') || '';
@@ -766,6 +793,7 @@ export default function App() {
     };
 
     ws.onmessage = async (event) => {
+      if (socketRef.current !== ws) return; // Ignore if superseded
       try {
         lastMessageReceivedTimeRef.current = Date.now();
         const data = JSON.parse(event.data);
@@ -831,36 +859,43 @@ export default function App() {
 
         else if (data.type === 'client_connection_request') {
           const existingDevice = authorizedDevicesRef.current.find(d => d.id === data.deviceId);
+          const isBlocked = existingDevice?.status === 'blocked' || deauthorizedDeviceIdsRef.current.includes(data.deviceId);
           const isPublicDisplay = data.deviceType === 'Pantalla Pública' || 
                                   data.deviceType === 'pantalla' || 
                                   (data.deviceName && (data.deviceName.toLowerCase().includes('pantalla') || data.deviceName.toLowerCase().includes('tv')));
 
-          if (existingDevice) {
-            if (existingDevice.status === 'blocked') {
-              ws.send(JSON.stringify({
-                type: 'auth_decision',
-                deviceId: data.deviceId,
-                approved: false,
-                deviceName: data.deviceName,
-                deviceType: data.deviceType,
-              }));
-              if (mode === 'server') {
-                addServerLog(`Intento de conexión rechazado automáticamente para dispositivo BLOQUEADO: "${data.deviceName}"`, 'warn');
-              }
-            } else {
-              ws.send(JSON.stringify({
-                type: 'auth_decision',
-                deviceId: data.deviceId,
-                approved: true,
-                remember: existingDevice.remember,
-                deviceName: data.deviceName,
-                deviceType: data.deviceType,
-              }));
-              setAuthorizedDevices(prev => prev.map(d => d.id === data.deviceId ? {
-                ...d,
-                lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
-              } : d));
+          if (isBlocked) {
+            ws.send(JSON.stringify({
+              type: 'auth_decision',
+              deviceId: data.deviceId,
+              approved: false,
+              deviceName: data.deviceName,
+              deviceType: data.deviceType,
+            }));
+            if (mode === 'server') {
+              addServerLog(`Intento de conexión rechazado automáticamente para dispositivo BLOQUEADO: "${data.deviceName}" (${data.deviceId})`, 'warn');
             }
+          } else if (existingDevice) {
+            ws.send(JSON.stringify({
+              type: 'auth_decision',
+              deviceId: data.deviceId,
+              approved: true,
+              remember: existingDevice.remember,
+              deviceName: data.deviceName,
+              deviceType: data.deviceType,
+            }));
+            setAuthorizedDevices(prev => prev.map(d => d.id === data.deviceId ? {
+              ...d,
+              status: 'authorized' as const,
+              lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+            } : d));
+            setConnectedClients(prev => {
+              const exists = prev.some(c => c.id === data.deviceId);
+              if (exists) {
+                return prev.map(c => c.id === data.deviceId ? { ...c, name: data.deviceName, connected: true, type: data.deviceType, status: 'authorized' } : c);
+              }
+              return [...prev, { id: data.deviceId, name: data.deviceName, connected: true, type: data.deviceType, status: 'authorized' }];
+            });
           } else if (isPublicDisplay || (appConfigRef.current as any)?.autoApprovePublicDisplays) {
             // Auto-authorize Public Display TV screens so they connect instantly without manual popup!
             const newDevice = {
@@ -874,6 +909,13 @@ export default function App() {
             setAuthorizedDevices(prev => {
               if (prev.some(d => d.id === data.deviceId)) return prev;
               return [...prev, newDevice];
+            });
+            setConnectedClients(prev => {
+              const exists = prev.some(c => c.id === data.deviceId);
+              if (exists) {
+                return prev.map(c => c.id === data.deviceId ? { ...c, name: newDevice.name, connected: true, type: newDevice.type, status: 'authorized' } : c);
+              }
+              return [...prev, { id: data.deviceId, name: newDevice.name, connected: true, type: newDevice.type, status: 'authorized' }];
             });
             ws.send(JSON.stringify({
               type: 'auth_decision',
@@ -897,7 +939,22 @@ export default function App() {
           }
         }
 
-        else if (data.type === 'client_joined') {
+        else if (data.type === 'client_joined' || data.type === 'client_connected') {
+          const isBlocked = authorizedDevicesRef.current.some(d => d.id === data.deviceId && d.status === 'blocked') || deauthorizedDeviceIdsRef.current.includes(data.deviceId);
+          
+          if (isBlocked) {
+            // Kick out blocked client immediately
+            ws.send(JSON.stringify({
+              type: 'deauthorize_client',
+              deviceId: data.deviceId
+            }));
+            if (mode === 'server') {
+              addServerLog(`Dispositivo BLOQUEADO "${data.deviceName}" (${data.deviceId}) desconectado automáticamente.`, 'warn');
+            }
+            setConnectedClients(prev => prev.map(c => c.id === data.deviceId ? { ...c, connected: false, status: 'blocked' } : c));
+            return;
+          }
+
           setAuthorizedDevices(prev => {
             const exists = prev.some(d => d.id === data.deviceId);
             const newDevice = {
@@ -905,11 +962,11 @@ export default function App() {
               name: data.deviceName,
               type: data.deviceType || 'Tablet',
               status: 'authorized' as const,
-              remember: data.remember || false,
+              remember: data.remember ?? true,
               lastConnected: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
             };
             if (exists) {
-              return prev.map(d => d.id === data.deviceId ? newDevice : d);
+              return prev.map(d => d.id === data.deviceId ? { ...d, ...newDevice, status: 'authorized' as const } : d);
             }
             return [...prev, newDevice];
           });
@@ -917,13 +974,13 @@ export default function App() {
           setConnectedClients(prev => {
             const exists = prev.some(c => c.id === data.deviceId);
             if (exists) {
-              return prev.map(c => c.id === data.deviceId ? { ...c, name: data.deviceName, connected: true, type: data.deviceType } : c);
+              return prev.map(c => c.id === data.deviceId ? { ...c, name: data.deviceName, connected: true, type: data.deviceType || c.type, status: 'authorized' } : c);
             }
-            return [...prev, { id: data.deviceId, name: data.deviceName, connected: true, type: data.deviceType }];
+            return [...prev, { id: data.deviceId, name: data.deviceName, connected: true, type: data.deviceType || 'Tablet', status: 'authorized' }];
           });
 
           if (mode === 'server') {
-            addServerLog(`Dispositivo "${data.deviceName}" (${data.deviceType || 'Tablet'}) se ha conectado al Servidor.`, 'success');
+            addServerLog(`Dispositivo "${data.deviceName}" (${data.deviceType || 'Tablet'}) conectado al Servidor.`, 'success');
             
             // Immediately push current server state to this specific reconnected client
             const statePayload = {
@@ -942,7 +999,7 @@ export default function App() {
               deviceId: data.deviceId,
               payload: statePayload
             }));
-            console.log(`[Sync] Sent immediate full-state synchronization to newly reconnected client: "${data.deviceName}" (${data.deviceId})`);
+            console.log(`[Sync] Sent immediate full-state synchronization to connected client: "${data.deviceName}" (${data.deviceId})`);
           }
         }
 
@@ -1022,10 +1079,13 @@ export default function App() {
 
         else if (data.type === 'deauthorized') {
           ws.close();
-          setDeviceMode('local');
-          localStorage.setItem('deviceMode', 'local');
+          const isTv = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
+          if (!isTv && !forcePCManualMode) {
+            setDeviceMode('local');
+            localStorage.setItem('deviceMode', 'local');
+          }
           setPairingStatus('unpaired');
-          triggerConfigSavedToast('Tu tablet ha sido desvinculada por el PC Servidor.');
+          triggerConfigSavedToast('Tu pantalla ha sido desvinculada por el PC Servidor.');
         }
 
         else if (data.type === 'rename') {
@@ -1071,7 +1131,11 @@ export default function App() {
     };
 
     ws.onclose = (event) => {
-      console.log('WebSocket closed with code:', event.code);
+      if (socketRef.current !== ws) {
+        console.log('[WS] Superseded socket closed silently.');
+        return;
+      }
+      console.log('[WS] Active WebSocket closed with code:', event.code);
       setPairingStatus('failed');
 
       // Clear heartbeat interval to prevent timer leaks
@@ -1081,19 +1145,22 @@ export default function App() {
       }
 
       if (!event.wasClean) {
-        setLastConnectionError(`Conexión perdida o interrumpida de forma inesperada (Código: ${event.code})`);
+        setLastConnectionError(`Conexión interrumpida (Código: ${event.code})`);
       } else {
         setLastConnectionError('Conexión cerrada.');
       }
       
-      // Auto reconnect with continuous 1-second frequency for screens & clients
+      // Auto reconnect with continuous frequency
       reconnectAttemptsRef.current += 1;
       const isTvScreen = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
       const isClientOrTVMode = mode === 'client' || isTvScreen;
-      const nextDelay = isClientOrTVMode ? 1000 : Math.min(reconnectAttemptsRef.current * 1000, 5000);
+      const nextDelay = isClientOrTVMode ? 1200 : Math.min(reconnectAttemptsRef.current * 1000, 5000);
 
-      console.log(`[WS Reconnect] Lost connection. Reconnecting in ${nextDelay / 1000}s (Attempt ${reconnectAttemptsRef.current})...`);
+      console.log(`[WS Reconnect] Reconnecting in ${nextDelay / 1000}s (Attempt ${reconnectAttemptsRef.current})...`);
 
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       reconnectTimeoutRef.current = setTimeout(() => {
         let m = localStorage.getItem('deviceMode') || (isClientOrTVMode ? 'client' : 'local');
         if (isClientOrTVMode) {
@@ -1109,8 +1176,9 @@ export default function App() {
     };
 
     ws.onerror = (err) => {
-      console.warn('WebSocket connection error (this is normal during setup or local scanning):', err);
-      setLastConnectionError('No se pudo establecer conexión. Verifique la IP o el código de sala.');
+      if (socketRef.current !== ws) return;
+      console.warn('[WS] WebSocket error event:', err);
+      setLastConnectionError('No se pudo establecer conexión con el Servidor.');
       setPairingStatus('failed');
       try {
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
@@ -1189,7 +1257,13 @@ export default function App() {
         handleAddTicket(payload.number, payload.fromOcr, payload.createdByDevice || clientName);
         break;
       case 'add_direct_waiting':
-        handleAddDirectWaitingTicket(payload.number, payload.createdByDevice || clientName, payload.source);
+        handleAddDirectWaitingTicket(payload.number, payload.createdByDevice || clientName, payload.source, payload.zone);
+        break;
+      case 'toggle_ticket_zone':
+        handleToggleTicketZone(payload.ticketId, payload.zoneId);
+        break;
+      case 'update_ticket_zone_name':
+        handleUpdateTicketZoneName(payload.ticketId, payload.zoneId, payload.newZoneName);
         break;
       case 'clear_waiting_list':
         handleClearWaitingList();
@@ -1410,28 +1484,16 @@ export default function App() {
 
   const handleBlockDevice = (id: string) => {
     setAuthorizedDevices(prev => {
-      return prev.map(d => d.id === id ? { ...d, status: 'blocked' as const } : d);
+      const updated = prev.map(d => d.id === id ? { ...d, status: 'blocked' as const } : d);
+      try { localStorage.setItem('authorizedDevices', JSON.stringify(updated)); } catch (e) {}
+      return updated;
     });
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        type: 'deauthorize_client',
-        deviceId: id,
-      }));
-    }
-  };
-
-  const handleUnblockDevice = (id: string) => {
-    setAuthorizedDevices(prev => {
-      return prev.map(d => d.id === id ? { ...d, status: 'authorized' as const } : d);
+    setConnectedClients(prev => {
+      return prev.map(c => c.id === id ? { ...c, status: 'blocked', connected: false } : c);
     });
-  };
-
-  const handleRemoveClient = (id: string) => {
-    setConnectedClients(prev => prev.filter(c => c.id !== id));
-    setAuthorizedDevices(prev => prev.filter(d => d.id !== id));
     setDeauthorizedDeviceIds(prev => {
       const next = prev.includes(id) ? prev : [...prev, id];
-      localStorage.setItem('deauthorizedDeviceIds', JSON.stringify(next));
+      try { localStorage.setItem('deauthorizedDeviceIds', JSON.stringify(next)); } catch (e) {}
       return next;
     });
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -1440,6 +1502,45 @@ export default function App() {
         deviceId: id,
       }));
     }
+    triggerConfigSavedToast('Dispositivo bloqueado y desconectado.');
+  };
+
+  const handleUnblockDevice = (id: string) => {
+    setAuthorizedDevices(prev => {
+      const updated = prev.map(d => d.id === id ? { ...d, status: 'authorized' as const } : d);
+      try { localStorage.setItem('authorizedDevices', JSON.stringify(updated)); } catch (e) {}
+      return updated;
+    });
+    setConnectedClients(prev => {
+      return prev.map(c => c.id === id ? { ...c, status: 'authorized' } : c);
+    });
+    setDeauthorizedDeviceIds(prev => {
+      const next = prev.filter(x => x !== id);
+      try { localStorage.setItem('deauthorizedDeviceIds', JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+    triggerConfigSavedToast('Dispositivo desbloqueado y autorizado.');
+  };
+
+  const handleRemoveClient = (id: string) => {
+    setConnectedClients(prev => prev.filter(c => c.id !== id));
+    setAuthorizedDevices(prev => {
+      const updated = prev.filter(d => d.id !== id);
+      try { localStorage.setItem('authorizedDevices', JSON.stringify(updated)); } catch (e) {}
+      return updated;
+    });
+    setDeauthorizedDeviceIds(prev => {
+      const next = prev.filter(x => x !== id);
+      try { localStorage.setItem('deauthorizedDeviceIds', JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'deauthorize_client',
+        deviceId: id,
+      }));
+    }
+    triggerConfigSavedToast('Dispositivo eliminado.');
   };
 
   const handleDisconnect = () => {
@@ -1477,12 +1578,23 @@ export default function App() {
 
   // Establish initial connections on start
   useEffect(() => {
-    if (deviceMode === 'server') {
+    const isTv = isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display';
+    if (isTv) {
+      setDeviceMode('client');
+      setClientRole('pantalla');
+      localStorage.setItem('deviceMode', 'client');
+      localStorage.setItem('clientRole', 'pantalla');
+      const savedCode = localStorage.getItem('pairedCode') || pairingCode || '100000';
+      const ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
+      connectWebSocket('client', savedCode, ip, true);
+    } else if (deviceMode === 'server') {
       const savedCode = localStorage.getItem('pairedCode') || '';
       connectWebSocket('server', savedCode, window.location.host);
       addServerLog("Servidor local iniciado. Esperando conexiones de tablets o pantallas...", "info");
-    } else if (deviceMode === 'client' && pairingCode) {
-      connectWebSocket('client', pairingCode, serverIP);
+    } else if (deviceMode === 'client') {
+      const savedCode = localStorage.getItem('pairedCode') || pairingCode || '100000';
+      const ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
+      connectWebSocket('client', savedCode, ip);
     }
     return () => {
       if (socketRef.current) {
@@ -1507,7 +1619,11 @@ export default function App() {
         if (deviceMode !== 'client') {
           setDeviceMode('client');
         }
+        if (clientRole !== 'pantalla') {
+          setClientRole('pantalla');
+        }
         localStorage.setItem('deviceMode', 'client');
+        localStorage.setItem('clientRole', 'pantalla');
       } else if (!currentMode) {
         currentMode = deviceMode;
       }
@@ -1517,11 +1633,11 @@ export default function App() {
       const socket = socketRef.current;
       const isSocketOpen = socket && socket.readyState === WebSocket.OPEN;
 
-      // 1. Check for stale / half-open socket (if open but no message received in 25s)
+      // 1. Check for stale / half-open socket (if open but no message received in 45s)
       if (isSocketOpen) {
         const idleTime = Date.now() - lastMessageReceivedTimeRef.current;
-        if (idleTime > 25000) {
-          console.warn('[1s Monitor] Heartbeat timeout (no message in 25s). Force closing stale socket...');
+        if (idleTime > 45000) {
+          console.warn('[1s Monitor] Heartbeat timeout (no message in 45s). Force closing stale socket...');
           try {
             socket.close();
           } catch (e) {}
@@ -1529,11 +1645,11 @@ export default function App() {
         return; // Connected and healthy!
       }
 
-      // 2. If socket is connecting, check if stuck for > 8s
+      // 2. If socket is connecting, check if stuck for > 12s
       if (socket && socket.readyState === WebSocket.CONNECTING) {
         const connectingTime = Date.now() - connectionStartTimeRef.current;
-        if (connectingTime > 8000) {
-          console.warn('[1s Monitor] Connection attempt stuck in CONNECTING for >8s. Resetting...');
+        if (connectingTime > 12000) {
+          console.warn('[1s Monitor] Connection attempt stuck in CONNECTING for >12s. Resetting...');
           try {
             socket.close();
           } catch (e) {}
@@ -1542,28 +1658,30 @@ export default function App() {
       }
 
       // 3. Socket is closed, missing, or failed -> TRIGGER RECONNECT IMMEDIATELY!
-      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING || (isTvScreen && pairingStatus !== 'paired')) {
         let code = localStorage.getItem('pairedCode') || pairingCode || '';
         let ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
 
-        // If code is empty, attempt room auto-discovery from /api/rooms
-        if (!code) {
-          try {
-            const res = await fetch(buildApiUrl(ip, '/api/rooms'));
-            if (res.ok) {
-              const data = await res.json();
-              const roomsList = data.rooms || [];
-              setAvailableRooms(roomsList);
-              if (roomsList.length > 0) {
-                code = roomsList[0].code;
-                console.log(`[1s Auto-Discovery] Found room ${code}. Saving and connecting...`);
-                setPairingCode(code);
-                localStorage.setItem('pairedCode', code);
-              }
+        // Attempt room auto-discovery from /api/rooms
+        try {
+          const res = await fetch(buildApiUrl(ip, '/api/rooms'), { cache: 'no-store' });
+          if (res.ok) {
+            const data = await res.json();
+            const roomsList = data.rooms || [];
+            setAvailableRooms(roomsList);
+            if (roomsList.length > 0) {
+              code = roomsList[0].code;
+              setPairingCode(code);
+              localStorage.setItem('pairedCode', code);
             }
-          } catch (err) {
-            console.warn('[1s Auto-Discovery] Room fetch failed:', err);
           }
+        } catch (err) {
+          // Silent catch
+        }
+
+        if (!code && isTvScreen) {
+          code = '100000';
+          setPairingCode(code);
         }
 
         if (code) {
@@ -1572,7 +1690,8 @@ export default function App() {
         } else if (currentMode === 'server') {
           connectWebSocket('server', code, ip);
         } else {
-          console.log(`[1s Reconnect Engine] Waiting for room code or auto-discovery...`);
+          console.log(`[1s Reconnect Engine] Auto-connecting client to default room 100000...`);
+          connectWebSocket('client', '100000', ip);
         }
       }
     };
@@ -1594,7 +1713,7 @@ export default function App() {
       window.removeEventListener('focus', handleInstantReconnect);
       window.removeEventListener('online', handleInstantReconnect);
     };
-  }, [deviceMode, clientRole, activeTab, pairingCode, serverIP]);
+  }, [deviceMode, clientRole, activeTab, pairingCode, serverIP, pairingStatus]);
 
   // Screen WakeLock for Smart TVs & Public Display Screens
   useEffect(() => {
@@ -1643,7 +1762,7 @@ export default function App() {
       if (currentMode !== 'client') return;
 
       const ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
-      const code = localStorage.getItem('pairedCode') || pairingCode || '';
+      const code = localStorage.getItem('pairedCode') || pairingCode || '100000';
 
       try {
         const syncUrl = buildApiUrl(ip, `/api/rooms/state/${encodeURIComponent(code)}`);
@@ -1719,28 +1838,59 @@ export default function App() {
     console.log('[Force Reconnect] Forced reconnection requested...');
     if (socketRef.current) {
       try {
+        socketRef.current.onopen = null;
+        socketRef.current.onclose = null;
+        socketRef.current.onerror = null;
+        socketRef.current.onmessage = null;
         socketRef.current.close();
       } catch (e) {}
+      socketRef.current = null;
     }
+    setPairingStatus('searching');
     let code = localStorage.getItem('pairedCode') || pairingCode || '';
     let ip = localStorage.getItem('serverIP') || serverIP || window.location.host;
 
-    if (!code) {
-      try {
-        const res = await fetch(buildApiUrl(ip, '/api/rooms'));
-        if (res.ok) {
-          const data = await res.json();
-          if (data.rooms && data.rooms.length > 0) {
-            code = data.rooms[0].code;
-            setPairingCode(code);
-            localStorage.setItem('pairedCode', code);
-          }
+    try {
+      const res = await fetch(buildApiUrl(ip, '/api/rooms'), { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rooms && data.rooms.length > 0) {
+          code = data.rooms[0].code;
+          setPairingCode(code);
+          localStorage.setItem('pairedCode', code);
         }
-      } catch (e) {}
+      }
+    } catch (e) {}
+
+    if (!code) {
+      code = '100000';
+      setPairingCode(code);
+      localStorage.setItem('pairedCode', code);
     }
 
-    const modeToUse = (deviceMode === 'local' || activeTab === 'tv_view' || clientRole === 'pantalla') ? 'client' : deviceMode;
-    connectWebSocket(modeToUse, code, ip);
+    const modeToUse = (deviceMode === 'local' || activeTab === 'tv_view' || clientRole === 'pantalla' || isTvUA) ? 'client' : deviceMode;
+    connectWebSocket(modeToUse, code, ip, true);
+
+    // Also trigger immediate HTTP state sync
+    try {
+      const syncUrl = buildApiUrl(ip, `/api/rooms/state/${encodeURIComponent(code)}`);
+      const res = await fetch(syncUrl, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.state) {
+          const st = data.state;
+          if (st.tickets) setTickets(st.tickets);
+          if (st.activeTicket !== undefined) setActiveTicket(st.activeTicket);
+          if (st.announcementCount !== undefined) setAnnouncementCount(st.announcementCount);
+          if (st.appConfig) setAppConfig(st.appConfig);
+          if (st.voiceSettings) setVoiceSettings(st.voiceSettings);
+          if (st.musicConfig) setMusicConfig(st.musicConfig);
+          if (st.isWaitlistPaused !== undefined) setIsWaitlistPaused(st.isWaitlistPaused);
+          setPairingStatus('paired');
+          setLastSyncTime(new Date().toLocaleTimeString());
+        }
+      }
+    } catch (e) {}
   };
 
   // Server state broadcast effect: broadcast server state updates to clients
@@ -2062,6 +2212,14 @@ export default function App() {
   useEffect(() => {
     handleKeyDownRef.current = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
+      const isTypingInOtherInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) && target.id !== 'fast-ticket-input';
+
+      if (isTypingInOtherInput) {
+        if (e.key === 'Escape') {
+          (target as HTMLElement).blur();
+        }
+        return;
+      }
       
       // ESC → Clear fast ticket input and focus it
       if (e.key === 'Escape' || (shortcutConfig.focusInput && matchesShortcut(e, shortcutConfig.focusInput))) {
@@ -2316,12 +2474,10 @@ export default function App() {
     const creator = createdByDevice || deviceName || 'Tablet';
     if (sendClientAction('add_ticket', { number, fromOcr, createdByDevice: creator })) return;
     // 3-digit normalization helper
-    const normalizedNum = String(parseInt(number, 10));
+    const normalizedNum = String(parseInt(number, 10) || number).trim();
 
-    // Guard: check for active or waiting duplicates
-    const isDuplicate = tickets.some(
-      (t) => t.number === normalizedNum && (t.status === 'active' || t.status === 'waiting')
-    );
+    // Guard: check for active duplicates (manual zone)
+    const isDuplicate = isDuplicateTicket(tickets, normalizedNum, 'manual');
     if (isDuplicate) {
       triggerConfigSavedToast(`⚠ Ticket #${normalizedNum} ya registrado`);
       if (deviceMode === 'server') {
@@ -2388,8 +2544,8 @@ export default function App() {
     forceRefocusInput();
   };
 
-  const handleMarkDelivered = async (id: string) => {
-    if (sendClientAction('mark_delivered', { id })) return;
+  const handleMarkDelivered = async (id: string, zoneId?: string) => {
+    if (sendClientAction('mark_delivered', { id, zoneId })) return;
     const completedAt = Date.now();
     
     // Check for target ticket
@@ -2399,12 +2555,56 @@ export default function App() {
       return;
     }
 
+    const currentZones = getTicketZones(targetTicket);
+    const pendingZones = currentZones.filter((z) => z.status === 'pending');
+
+    if (pendingZones.length > 0) {
+      let zoneToComplete = zoneId
+        ? currentZones.find((z) => z.id === zoneId || normalizeZone(z.zone) === normalizeZone(zoneId))
+        : undefined;
+
+      if (!zoneToComplete) {
+        zoneToComplete = pendingZones[0];
+      }
+
+      const updatedZones = currentZones.map((z) => {
+        if (z.id === zoneToComplete!.id || normalizeZone(z.zone) === normalizeZone(zoneToComplete!.zone)) {
+          return { ...z, status: 'completed' as const, completedAt };
+        }
+        return z;
+      });
+
+      const remainingPending = updatedZones.filter((z) => z.status === 'pending');
+
+      if (remainingPending.length > 0) {
+        // STILL HAS PENDING STATIONS -> Keep ticket active/waiting with updated zones
+        const updatedTicket: Ticket = {
+          ...targetTicket,
+          zones: updatedZones
+        };
+
+        const updatedTickets = sanitizeAndMergeTickets(
+          tickets.map((t) => (t.id === targetTicket.id ? updatedTicket : t))
+        );
+        setTickets(updatedTickets);
+        await dbSaveTicket(updatedTicket);
+
+        triggerConfigSavedToast(`🟢 #${targetTicket.number} — Estación '${zoneToComplete!.zone}' entregada. Pendientes: ${remainingPending.map((z) => z.zone).join(', ')}`);
+        if (deviceMode === 'server') {
+          addServerLog(`Pedido #${targetTicket.number} Estación '${zoneToComplete!.zone}' -> COMPLETADA. Pendientes: ${remainingPending.map((z) => z.zone).join(', ')}`, 'info');
+        }
+        forceRefocusInput();
+        return;
+      }
+    }
+
+    // ALL STATIONS COMPLETED OR NO PENDING ZONES -> Complete ticket
     const ticketsToDeliver = [targetTicket];
     let updatedTickets = [...tickets];
     
     for (const ticket of ticketsToDeliver) {
       if (deviceMode === 'server') {
-        addServerLog(`Ticket #${ticket.number} marcado como entregado/completado.`, 'success');
+        addServerLog(`Ticket #${ticket.number} completado por todas las estaciones.`, 'success');
       }
 
       const updatedTicket: Ticket = {
@@ -2412,19 +2612,20 @@ export default function App() {
         status: 'delivered',
         completedAt,
         totalTime: Math.max(0, Math.floor((completedAt - ticket.createdAt) / 1000)),
+        zones: getTicketZones(ticket).map((z) => ({ ...z, status: 'completed' as const, completedAt }))
       };
 
       await dbSaveTicket(updatedTicket);
       updatedTickets = updatedTickets.map((t) => (t.id === ticket.id ? updatedTicket : t));
     }
 
+    updatedTickets = sanitizeAndMergeTickets(updatedTickets);
     setTickets(updatedTickets);
 
-    // CASO 3: Auto-llamador -> Al entregar el ticket activo actual (#541), el siguiente en la lista de Listos (#542) pasa a ser ACTIVO automáticamente
     if (activeTicket && ticketsToDeliver.some((t) => t.id === activeTicket.id)) {
       const remainingActive = updatedTickets
-        .filter((t) => t.status === 'active' && !ticketsToDeliver.some(td => td.id === t.id))
-        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)); // FIFO: el más antiguo primero
+        .filter((t) => t.status === 'active' && !ticketsToDeliver.some((td) => td.id === t.id))
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
       if (remainingActive.length > 0) {
         const nextInLine = remainingActive[0];
@@ -2453,11 +2654,11 @@ export default function App() {
           speakText(msg, voiceSettings);
         } else {
           setActiveTicket(null);
-          setAnnouncementCount(0);
         }
       }
     }
 
+    triggerConfigSavedToast(`✔ Ticket #${targetTicket.number} completamente entregado`);
     setTransitionNotification({
       number: activeTicket && activeTicket.id === id ? activeTicket.number : targetTicket.number,
       type: 'delivered',
@@ -2592,24 +2793,69 @@ export default function App() {
     forceRefocusInput();
   };
 
-  const handleAddDirectWaitingTicket = async (number: string, createdByDevice?: string, source?: string) => {
+  const handleAddDirectWaitingTicket = async (
+    number: string,
+    createdByDevice?: string,
+    source?: string,
+    zoneName?: string
+  ) => {
     const creator = createdByDevice || deviceName || 'Tablet';
     const ticketSource = source || (createdByDevice?.toLowerCase().includes('hiopos') ? 'HIOPOS' : 'MANUAL');
-    if (sendClientAction('add_direct_waiting', { number, createdByDevice: creator, source: ticketSource })) return;
-    const normalizedNum = String(parseInt(number, 10));
+    const targetZone = zoneName && zoneName.trim() ? zoneName.trim() : ticketSource === 'MANUAL' ? 'General' : 'Sin asignar';
 
-    // Guard: check for active or waiting duplicates
-    const isDuplicate = tickets.some(
-      (t) => t.number === normalizedNum && (t.status === 'active' || t.status === 'waiting')
-    );
-    if (isDuplicate) {
+    if (sendClientAction('add_direct_waiting', { number, createdByDevice: creator, source: ticketSource, zone: targetZone })) return;
+    const normalizedNum = String(parseInt(number, 10) || number).trim();
+    const dupKey = getTicketZoneKey(normalizedNum, targetZone);
+
+    // Multizone duplicate check: ticketNumber + zone among active tickets
+    const isDup = isDuplicateTicket(tickets, normalizedNum, targetZone);
+    if (isDup) {
+      const logMsg = `Duplicado ignorado: ${normalizedNum} / ${targetZone}`;
+      console.log(`[DEVICE TICKET] Número: ${normalizedNum} | Zona: ${targetZone} | Source: ${ticketSource} | Duplicate key: ${dupKey} | Resultado: REJECTED | Reason: duplicate_same_zone`);
+      triggerConfigSavedToast(`⚠ ${logMsg}`);
       if (deviceMode === 'server') {
-        addServerLog(`Ticket #${normalizedNum} (${ticketSource}) duplicado ignorado.`, 'warn');
+        addServerLog(`[DEVICE TICKET] ${logMsg} (Key: ${dupKey})`, 'warn');
       }
       forceRefocusInput();
       return;
     }
 
+    console.log(`[DEVICE TICKET] Número: ${normalizedNum} | Zona: ${targetZone} | Source: ${ticketSource} | Duplicate key: ${dupKey} | Resultado: ACCEPTED`);
+
+    // Check if an ACTIVE ticket with same ticket number exists in waiting/active/pending (e.g. from another zone)
+    const activeTicket = tickets.find(
+      (t) => (t.number === normalizedNum || String(parseInt(t.number, 10) || t.number).trim() === normalizedNum) &&
+             (t.status === 'active' || t.status === 'waiting' || t.status === 'pending')
+    );
+
+    const newZoneObj = {
+      id: `${normalizedNum}:${normalizeZone(targetZone)}`,
+      zone: targetZone,
+      status: 'pending' as const,
+      createdAt: Date.now()
+    };
+
+    if (activeTicket) {
+      // NEW ZONE FOR EXISTING ACTIVE TICKET -> Append zone
+      const currentZones = getTicketZones(activeTicket);
+      const updatedTicket: Ticket = {
+        ...activeTicket,
+        zones: [...currentZones, newZoneObj]
+      };
+
+      const updatedTickets = tickets.map((t) => (t.id === activeTicket.id ? updatedTicket : t));
+      setTickets(updatedTickets);
+      await dbSaveTicket(updatedTicket);
+
+      triggerConfigSavedToast(`✔ Zona '${targetZone}' añadida al Pedido #${normalizedNum}`);
+      if (deviceMode === 'server') {
+        addServerLog(`Pedido #${normalizedNum}: añadida zona '${targetZone}' [${creator}].`, 'info');
+      }
+      forceRefocusInput();
+      return;
+    }
+
+    // NO ACTIVE TICKET EXISTS -> Create new ticket with targetZone in LISTA DE ESPERA
     const newTicket: Ticket = {
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
       number: normalizedNum,
@@ -2617,27 +2863,125 @@ export default function App() {
       status: 'waiting',
       createdByDevice: creator,
       source: ticketSource,
+      zones: [newZoneObj],
+      zone: targetZone
     };
 
     const updatedTickets = [...tickets, newTicket];
     setTickets(updatedTickets);
     await dbSaveTicket(newTicket);
-    triggerConfigSavedToast(`✔ Ticket #${normalizedNum} añadido a Espera (${creator})`);
+    triggerConfigSavedToast(`✔ Ticket #${normalizedNum} (${targetZone}) añadido a Espera`);
     if (deviceMode === 'server') {
-      addServerLog(`Ticket #${normalizedNum} (${ticketSource}) -> LISTA DE ESPERA [${creator}].`, 'info');
+      addServerLog(`Ticket #${normalizedNum} (${targetZone}) -> LISTA DE ESPERA [${creator}].`, 'info');
     }
+    forceRefocusInput();
+  };
+
+  const handleToggleTicketZone = async (ticketId: string, zoneId: string) => {
+    if (sendClientAction('toggle_ticket_zone', { ticketId, zoneId })) return;
+    const ticket = tickets.find((t) => t.id === ticketId);
+    if (!ticket) return;
+
+    const currentZones = getTicketZones(ticket);
+    const targetZone = currentZones.find((z) => z.id === zoneId || z.zone === zoneId);
+    if (!targetZone) return;
+
+    const newZoneStatus = targetZone.status === 'completed' ? 'pending' : 'completed';
+    const updatedZones = currentZones.map((z) => {
+      if (z.id === zoneId || z.zone === zoneId) {
+        return {
+          ...z,
+          status: newZoneStatus,
+          completedAt: newZoneStatus === 'completed' ? Date.now() : undefined
+        };
+      }
+      return z;
+    });
+
+    const isAllDone = updatedZones.length > 0 && updatedZones.every((z) => z.status === 'completed');
+
+    if (newZoneStatus === 'completed') {
+      triggerConfigSavedToast(`🟢 ${ticket.number} — ${targetZone.zone} Completado`);
+      if (deviceMode === 'server') {
+        addServerLog(`Pedido #${ticket.number} Zona '${targetZone.zone}' -> COMPLETADO.`, 'info');
+      }
+      // Broadcast ticket_zone_completed event over WebSocket
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'ticket_zone_completed',
+          ticketNumber: ticket.number,
+          zone: targetZone.zone,
+          timestamp: Date.now()
+        }));
+      }
+    }
+
+    let updatedTicket: Ticket = {
+      ...ticket,
+      zones: updatedZones
+    };
+
+    if (isAllDone) {
+      updatedTicket = {
+        ...updatedTicket,
+        status: 'active',
+        completedAt: Date.now(),
+        totalTime: Math.max(0, Math.floor((Date.now() - ticket.createdAt) / 1000))
+      };
+      setActiveTicket(updatedTicket);
+      setAnnouncementCount(1);
+      setTransitionNotification({
+        number: ticket.number,
+        type: 'active',
+        id: Date.now(),
+      });
+      triggerConfigSavedToast(`🎉 Pedido #${ticket.number} LISTO PARA ENTREGAR (Todas las zonas terminadas)`);
+      if (deviceMode === 'server') {
+        addServerLog(`Pedido #${ticket.number} COMPLETADO TOTALMENTE -> Pasa a LISTO/PANTALLA.`, 'info');
+      }
+    } else if (ticket.status === 'active') {
+      updatedTicket = {
+        ...updatedTicket,
+        status: 'waiting'
+      };
+      triggerConfigSavedToast(`⏳ Pedido #${ticket.number} devuelto a Espera (Zonas pendientes)`);
+    }
+
+    const updatedTickets = tickets.map((t) => (t.id === ticketId ? updatedTicket : t));
+    setTickets(updatedTickets);
+    await dbSaveTicket(updatedTicket);
+    forceRefocusInput();
+  };
+
+  const handleUpdateTicketZoneName = async (ticketId: string, zoneId: string, newZoneName: string) => {
+    const cleanName = newZoneName.trim();
+    if (!cleanName) return;
+    if (sendClientAction('update_ticket_zone_name', { ticketId, zoneId, newZoneName: cleanName })) return;
+    const ticket = tickets.find((t) => t.id === ticketId);
+    if (!ticket) return;
+
+    const currentZones = getTicketZones(ticket);
+    const updatedZones = currentZones.map((z) => {
+      if (z.id === zoneId || z.zone === zoneId) {
+        return { ...z, zone: cleanName };
+      }
+      return z;
+    });
+
+    const updatedTicket: Ticket = { ...ticket, zones: updatedZones, zone: cleanName };
+    const updatedTickets = tickets.map((t) => (t.id === ticketId ? updatedTicket : t));
+    setTickets(updatedTickets);
+    await dbSaveTicket(updatedTicket);
     forceRefocusInput();
   };
 
   const handleAddDirectPendingTicket = async (number: string, createdByDevice?: string) => {
     const creator = createdByDevice || deviceName || 'Tablet';
     if (sendClientAction('add_direct_pending', { number, createdByDevice: creator })) return;
-    const normalizedNum = String(parseInt(number, 10));
+    const normalizedNum = String(parseInt(number, 10) || number).trim();
 
-    // Guard: check for duplicate in pending status
-    const isDuplicate = tickets.some(
-      (t) => t.number === normalizedNum && t.status === 'pending'
-    );
+    // Guard: check for duplicate
+    const isDuplicate = isDuplicateTicket(tickets, normalizedNum, 'manual');
     if (isDuplicate) {
       forceRefocusInput();
       return;
@@ -3350,7 +3694,9 @@ export default function App() {
     }
   }, [pairingStatus, deviceMode]);
 
-  if (isDBReady && deviceMode === 'client' && clientRole === 'pantalla') {
+  const isTvScreen = (isTvUA || clientRole === 'pantalla' || activeTab === 'tv_view' || urlRole === 'pantalla' || urlMode === 'public_display') && !forcePCManualMode;
+
+  if (isTvScreen || (deviceMode === 'client' && clientRole === 'pantalla')) {
     return (
       <PublicDisplayView
         activeTicket={activeTicket}
@@ -3359,6 +3705,9 @@ export default function App() {
         serverIP={serverIP}
         appConfig={appConfig}
         onSelectMode={(mode) => {
+          if (mode === 'local') {
+            setForcePCManualMode(true);
+          }
           handleSelectMode(mode);
         }}
         onMediaMissing={handleMediaMissing}
@@ -3634,23 +3983,33 @@ export default function App() {
             </button>
           </div>
 
-          {/* Botón flotante para música */}
-          <button
-            onClick={() => setIsMusicModalOpen(true)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
-              musicConfig.enabled
-                ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300 shadow-sm'
-                : 'hover:brightness-110'
-            }`}
-            style={!musicConfig.enabled ? {
-              backgroundColor: 'var(--theme-card-bg, #0f172a)',
-              borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
-              color: 'var(--theme-text-muted, #94a3b8)',
-            } : {}}
-          >
-            <Music size={14} className={musicConfig.enabled ? "text-emerald-400 animate-pulse" : ""} />
-            <span>🎵 Música</span>
-          </button>
+          {/* Botón flotante para música (desactivado exclusivamente en Modo Tablet) */}
+          {activeTab !== 'tablet' ? (
+            <button
+              onClick={() => setIsMusicModalOpen(true)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                musicConfig.enabled
+                  ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300 shadow-sm'
+                  : 'hover:brightness-110'
+              }`}
+              style={!musicConfig.enabled ? {
+                backgroundColor: 'var(--theme-card-bg, #0f172a)',
+                borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
+                color: 'var(--theme-text-muted, #94a3b8)',
+              } : {}}
+            >
+              <Music size={14} className={musicConfig.enabled ? "text-emerald-400 animate-pulse" : ""} />
+              <span>🎵 Música</span>
+            </button>
+          ) : (
+            <div
+              className="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border bg-slate-900/60 border-slate-800/80 text-slate-500 opacity-80 cursor-not-allowed select-none"
+              title="El modo YouTube está desactivado en el Modo Tablet"
+            >
+              <Music size={14} className="text-slate-600" />
+              <span>🎵 YouTube (Desactivado en Tablet)</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -3874,6 +4233,8 @@ export default function App() {
                     onCallNow={handleCallTicketNow}
                     onTogglePriority={handleTogglePriority}
                     onClearList={handleClearWaitingList}
+                    onToggleTicketZone={handleToggleTicketZone}
+                    onUpdateTicketZoneName={handleUpdateTicketZoneName}
                   />
                 </div>
 
@@ -4265,8 +4626,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Persistent Background Music Integrated Player across all tabs */}
-      {musicConfig.enabled && musicConfig.integratedEnabled && !isMusicModalOpen && (
+      {/* Persistent Background Music Integrated Player across all tabs except Tablet mode */}
+      {activeTab !== 'tablet' && musicConfig.enabled && musicConfig.integratedEnabled && !isMusicModalOpen && (
         <YouTubeErrorBoundary>
           <BackgroundMusicPlayer
             musicConfig={musicConfig}

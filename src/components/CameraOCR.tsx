@@ -38,6 +38,9 @@ import {
   computeFrameDifference,
   isAndroidNativeApp
 } from '../utils/androidBridge';
+import { processTicketOCR, CandidateTemporalTracker, TicketOcrResult, isValidTicketNumber } from '../utils/ticketOCR';
+import { CandidateEvaluation } from '../utils/ticketCandidateScorer';
+import { preprocessImage } from '../utils/imagePreprocessing';
 
 export interface OCRSample {
   id: string;
@@ -110,11 +113,11 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     rotation: 0,
     sharpenEnabled: true,
     noiseRemoval: false,
-    roiWidthPct: 55,
-    roiHeightPct: 22,
+    roiWidthPct: 85,
+    roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 75,
-    stableFrameCount: 2,
+    minConfidence: 52,
+    stableFrameCount: 1,
   },
   {
     id: 'matricial_cocina',
@@ -127,11 +130,11 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     rotation: 2,
     sharpenEnabled: true,
     noiseRemoval: true,
-    roiWidthPct: 60,
-    roiHeightPct: 25,
+    roiWidthPct: 85,
+    roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 65,
-    stableFrameCount: 3,
+    minConfidence: 52,
+    stableFrameCount: 2,
   },
   {
     id: 'termica_delivery',
@@ -144,11 +147,11 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     rotation: 0,
     sharpenEnabled: false,
     noiseRemoval: false,
-    roiWidthPct: 50,
-    roiHeightPct: 20,
+    roiWidthPct: 85,
+    roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 80,
-    stableFrameCount: 2,
+    minConfidence: 52,
+    stableFrameCount: 1,
   },
   {
     id: 'generica',
@@ -161,175 +164,13 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     rotation: 0,
     sharpenEnabled: true,
     noiseRemoval: false,
-    roiWidthPct: 50,
-    roiHeightPct: 25,
+    roiWidthPct: 85,
+    roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 70,
-    stableFrameCount: 2,
+    minConfidence: 52,
+    stableFrameCount: 1,
   },
 ];
-
-/**
- * High-performance image processing pipeline to prepare cropped ticket region for OCR.
- * Applies: Grayscale, Contrast Stretching, Adaptive Binarization, and Laplacian Sharpening.
- */
-function preprocessImage(
-  srcCanvas: HTMLCanvasElement,
-  destCanvas: HTMLCanvasElement,
-  contrast: number,
-  brightness: number,
-  sharpen: boolean,
-  binarizeThreshold: number,
-  noiseRemoval: boolean
-) {
-  const destCtx = destCanvas.getContext('2d');
-  if (!destCtx) return;
-
-  const width = srcCanvas.width;
-  const height = srcCanvas.height;
-
-  destCanvas.width = width;
-  destCanvas.height = height;
-
-  destCtx.drawImage(srcCanvas, 0, 0);
-
-  const imgData = destCtx.getImageData(0, 0, width, height);
-  const data = imgData.data;
-
-  // 1. Grayscale & Contrast/Brightness Enhancement
-  const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-
-    // Luminosity Grayscale formula
-    let gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-    // Apply brightness
-    gray += brightness;
-
-    // Apply contrast factor
-    gray = factor * (gray - 128) + 128;
-
-    // Clamp values
-    gray = Math.max(0, Math.min(255, gray));
-
-    data[i] = gray;
-    data[i + 1] = gray;
-    data[i + 2] = gray;
-  }
-
-  // 2. Adaptive Binarization
-  // Calculate average luminance of the cropped region
-  let sum = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    sum += data[i];
-  }
-  const avgLuminance = sum / (data.length / 4);
-
-  // Dynamic threshold: blend global average with user-defined threshold
-  const threshold = (avgLuminance + binarizeThreshold) / 2;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const val = data[i] < threshold ? 0 : 255;
-    data[i] = val;
-    data[i + 1] = val;
-    data[i + 2] = val;
-  }
-
-  destCtx.putImageData(imgData, 0, 0);
-
-  // 3. Noise Removal (Isolated pixel cluster cleaning)
-  if (noiseRemoval && width > 2 && height > 2) {
-    const srcData = destCtx.getImageData(0, 0, width, height);
-    const srcPixels = srcData.data;
-    const cleanedData = destCtx.createImageData(width, height);
-    const dstPixels = cleanedData.data;
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const dstIdx = (y * width + x) * 4;
-        if (y === 0 || y === height - 1 || x === 0 || x === width - 1) {
-          // Boundary copy
-          dstPixels[dstIdx] = srcPixels[dstIdx];
-          dstPixels[dstIdx + 1] = srcPixels[dstIdx + 1];
-          dstPixels[dstIdx + 2] = srcPixels[dstIdx + 2];
-          dstPixels[dstIdx + 3] = 255;
-          continue;
-        }
-
-        let blackCount = 0;
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const nIdx = ((y + ky) * width + (x + kx)) * 4;
-            if (srcPixels[nIdx] < 128) {
-              blackCount++;
-            }
-          }
-        }
-
-        // If very isolated black pixel, turn to white. If dense white, turn to black.
-        let val = srcPixels[dstIdx];
-        if (srcPixels[dstIdx] < 128 && blackCount <= 2) {
-          val = 255; // Eliminate speckle noise
-        } else if (srcPixels[dstIdx] > 128 && blackCount >= 7) {
-          val = 0; // Fill small gaps in text lines
-        }
-
-        dstPixels[dstIdx] = val;
-        dstPixels[dstIdx + 1] = val;
-        dstPixels[dstIdx + 2] = val;
-        dstPixels[dstIdx + 3] = 255;
-      }
-    }
-    destCtx.putImageData(cleanedData, 0, 0);
-  }
-
-  // 4. Laplacian Sharpen Filter (makes numbers outline very crisp)
-  if (sharpen && width > 2 && height > 2) {
-    const srcData = destCtx.getImageData(0, 0, width, height);
-    const srcPixels = srcData.data;
-    const sharpenedData = destCtx.createImageData(width, height);
-    const dstPixels = sharpenedData.data;
-
-    // Sharpen kernel
-    const weights = [
-       0, -1,  0,
-      -1,  5, -1,
-       0, -1,  0
-    ];
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const dstIdx = (y * width + x) * 4;
-
-        let rSum = 0;
-        let gSum = 0;
-        let bSum = 0;
-
-        for (let ky = 0; ky < 3; ky++) {
-          for (let kx = 0; kx < 3; kx++) {
-            const px = Math.min(width - 1, Math.max(0, x + kx - 1));
-            const py = Math.min(height - 1, Math.max(0, y + ky - 1));
-            const srcIdx = (py * width + px) * 4;
-            const weight = weights[ky * 3 + kx];
-
-            rSum += srcPixels[srcIdx] * weight;
-            gSum += srcPixels[srcIdx + 1] * weight;
-            bSum += srcPixels[srcIdx + 2] * weight;
-          }
-        }
-
-        dstPixels[dstIdx] = Math.max(0, Math.min(255, rSum));
-        dstPixels[dstIdx + 1] = Math.max(0, Math.min(255, gSum));
-        dstPixels[dstIdx + 2] = Math.max(0, Math.min(255, bSum));
-        dstPixels[dstIdx + 3] = 255; // Alpha
-      }
-    }
-    destCtx.putImageData(sharpenedData, 0, 0);
-  }
-}
 
 export default function CameraOCR({
   onAddTicket,
@@ -369,9 +210,12 @@ export default function CameraOCR({
 
   // Cooldown dictionary to avoid repeated reads of the same ticket in rapid succession
   const [recentDetections, setRecentDetections] = useState<Record<string, number>>({});
+  const recentDetectionsRef = useRef<Record<string, number>>({});
+  const lastAddedTicketRef = useRef<string | null>(null);
 
-  // Scanning Activity state
+  // Scanning Activity state & synchronous lock ref
   const [isProcessingFrame, setIsProcessingFrame] = useState(false);
+  const isProcessingFrameRef = useRef(false);
 
   // For testing/mocking in preview environments without real webcams or physical tickets
   const [useSimulator, setUseSimulator] = useState(false);
@@ -393,10 +237,23 @@ export default function CameraOCR({
   const [activeProfileId, setActiveProfileId] = useState<string>('termica_barra');
   const [isTrainingActive, setIsTrainingActive] = useState(false);
   const [noiseRemoval, setNoiseRemoval] = useState(false);
-  const [minConfidence, setMinConfidence] = useState(70);
-  const [stableFrameCount, setStableFrameCount] = useState(2);
+  const [minConfidence, setMinConfidence] = useState(52);
+  const [stableFrameCount, setStableFrameCount] = useState(1);
   const [autoTuningEnabled, setAutoTuningEnabled] = useState(true);
   const [autoTuningStatus, setAutoTuningStatus] = useState<'locked' | 'searching'>('locked');
+
+  // Real-time Diagnostic Mode & Temporal Candidate Memory Tracker
+  const [showDiagnosticMode, setShowDiagnosticMode] = useState(false);
+  const [lastOcrDiagnostic, setLastOcrDiagnostic] = useState<TicketOcrResult | null>(null);
+  const temporalTrackerRef = useRef<CandidateTemporalTracker>(
+    new CandidateTemporalTracker({ requiredStableFrames: stableFrameCount })
+  );
+
+  useEffect(() => {
+    if (temporalTrackerRef.current) {
+      temporalTrackerRef.current.setRequiredFrames(stableFrameCount);
+    }
+  }, [stableFrameCount]);
 
   // Real-time training metrics, samples dataset, and corrections state
   const [tempCorrectedNumber, setTempCorrectedNumber] = useState('');
@@ -407,8 +264,8 @@ export default function CameraOCR({
   const [autoLearnedCycles, setAutoLearnedCycles] = useState<number>(0);
 
   // Interactive ROI settings (in percentages of viewport)
-  const [roiWidthPct, setRoiWidthPct] = useState(55);
-  const [roiHeightPct, setRoiHeightPct] = useState(22);
+  const [roiWidthPct, setRoiWidthPct] = useState(85);
+  const [roiHeightPct, setRoiHeightPct] = useState(75);
   const [roiYOffsetPct, setRoiYOffsetPct] = useState(0);
 
   // High-precision Image Preprocessing parameters
@@ -561,8 +418,8 @@ export default function CameraOCR({
 
   // Keep a thread-safe Ref copy of parameters for real-time slider manipulation
   const settingsRef = useRef({
-    roiWidthPct: 50,
-    roiHeightPct: 25,
+    roiWidthPct: 85,
+    roiHeightPct: 75,
     roiYOffsetPct: 0,
     contrast: 65,
     brightness: 15,
@@ -570,8 +427,8 @@ export default function CameraOCR({
     binarizeThreshold: 128,
     sharpenEnabled: true,
     noiseRemoval: false,
-    minConfidence: 70,
-    stableFrameCount: 2,
+    minConfidence: 52,
+    stableFrameCount: 1,
   });
 
   // Mirror sliders into the Ref to ensure continuous scanning loops read the latest values instantly
@@ -728,7 +585,7 @@ export default function CameraOCR({
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        videoRef.current.play();
+        videoRef.current.play().catch(e => console.warn('Video play interrupted or rejected:', e));
       }
 
       // Check if torch/flashlight is supported
@@ -854,7 +711,7 @@ export default function CameraOCR({
     if ((isCameraActive || useSimulator) && !isOcrPaused && worker) {
       ocrInterval = setInterval(async () => {
         await runOcrOnFrame();
-      }, 1200); // Higher speed scan frequency
+      }, 950); // Fluid, continuous scan loop
     }
 
     return () => {
@@ -904,7 +761,7 @@ export default function CameraOCR({
 
   // OCR Processing Tick
   const runOcrOnFrame = async () => {
-    if (!worker || isProcessingFrame) return;
+    if (!worker || isProcessingFrameRef.current) return;
 
     let imageSrc: CanvasImageSource | null = null;
     let width = 0;
@@ -966,6 +823,7 @@ export default function CameraOCR({
       }
     }
 
+    isProcessingFrameRef.current = true;
     setIsProcessingFrame(true);
     const startTime = Date.now();
 
@@ -989,11 +847,9 @@ export default function CameraOCR({
 
       if (cropCtx) {
         cropCtx.save();
-        // Translate to crop center to support rotation
         cropCtx.translate(cropWidth / 2, cropHeight / 2);
         const rad = (s.rotation * Math.PI) / 180;
         cropCtx.rotate(rad);
-        // Draw centered
         cropCtx.drawImage(
           imageSrc,
           cropX, cropY, cropWidth, cropHeight,
@@ -1002,271 +858,91 @@ export default function CameraOCR({
         cropCtx.restore();
       }
 
-      // Step 4: Apply image processing pipeline to prepare cropped ticket for OCR
+      // Step 4: Draw image preprocessing preview canvas
       const processedCanvas = processedCanvasRef.current;
       if (processedCanvas) {
-        preprocessImage(
-          cropCanvas,
-          processedCanvas,
-          s.contrast,
-          s.brightness,
-          s.sharpenEnabled,
-          s.binarizeThreshold,
-          s.noiseRemoval
-        );
-
-        // Step 5: Feed the pristine binarized crop canvas directly to the Tesseract worker
-        const result = await worker.recognize(processedCanvas);
-        const rawText = result.data.text || '';
-        const cleanRawText = rawText.trim().replace(/\s+/g, ' ');
-        setLastRawText(cleanRawText);
-
-        const words = fundraisersFromResult(result);
-        const detected: { number: string; confidence: number; x: number; y: number; w: number; h: number }[] = [];
-
-        words.forEach((word: any) => {
-          // Clean prefix symbols like Nº, N°, NO, #, TICKET, T-
-          const rawWord = word.text.trim();
-          const cleanWord = rawWord.replace(/^(TICKET|Nº|N°|NO|N|T|#|C|P|\.)/gi, '').replace(/[^\d]/g, ''); // Digits only
-
-          // Allow 1 to 5 digits ticket numbers (e.g. 1, 12, 104, 1005, 00102)
-          if (cleanWord.length >= 1 && cleanWord.length <= 5) {
-            const numVal = parseInt(cleanWord, 10);
-            // Smart year filter: only exclude if 4 digits between 2024 and 2035 and explicit date context
-            const isYear = cleanWord.length === 4 && numVal >= 2024 && numVal <= 2035 && /(FECHA|DATE|\/|-20)/i.test(rawWord);
-            const confidence = word.confidence || 0;
-            // Allow numbers with confidence threshold
-            const isConfident = confidence >= Math.max(40, s.minConfidence - 20);
-
-            if (!isNaN(numVal) && numVal > 0 && !isYear && isConfident) {
-              const { x0, y0, x1, y1 } = word.bbox || { x0: 0, y0: 0, x1: 0, y1: 0 };
-
-              // Map ROI coordinates back to full-screen coordinates
-              detected.push({
-                number: String(numVal),
-                confidence: confidence,
-                x: cropX + x0,
-                y: cropY + y0,
-                w: Math.max(40, x1 - x0),
-                h: Math.max(30, y1 - y0),
-              });
-            }
-          }
+        preprocessImage(cropCanvas, processedCanvas, {
+          contrast: s.contrast,
+          brightness: s.brightness,
+          binarizeThreshold: s.binarizeThreshold,
+          sharpen: s.sharpenEnabled,
+          noiseRemoval: s.noiseRemoval
         });
+      }
 
-        // Backup regex matching directly on full rawText if word-based bounding box extraction yielded nothing or to catch prefix patterns
-        if (detected.length === 0) {
-          const numberMatches = rawText.match(/(?:TICKET|NO|Nº|N°|T|#|\b)\s*(\d{1,5})\b/gi) || rawText.match(/\b\d{1,5}\b/g) || [];
-          numberMatches.forEach((numMatch) => {
-            const digitsOnly = numMatch.replace(/[^\d]/g, '');
-            if (!digitsOnly) return;
-            const numVal = parseInt(digitsOnly, 10);
-            const isYear = digitsOnly.length === 4 && numVal >= 2024 && numVal <= 2035 && /(FECHA|DATE|\/|-20)/i.test(rawText);
-            if (!isNaN(numVal) && numVal > 0 && !isYear) {
-              detected.push({
-                number: String(numVal),
-                confidence: 85, // Assumed baseline backup confidence
-                x: cropX + cropWidth / 2 - 40,
-                y: cropY + cropHeight / 2 - 20,
-                w: 80,
-                h: 40,
-              });
-            }
-          });
-        }
+      // Step 5: Run specialized ticket OCR engine
+      const ocrResult = await processTicketOCR(worker, cropCanvas, {
+        contrast: s.contrast,
+        brightness: s.brightness,
+        binarizeThreshold: s.binarizeThreshold,
+        sharpenEnabled: s.sharpenEnabled,
+        noiseRemoval: s.noiseRemoval,
+        minConfidence: s.minConfidence,
+        enableSecondPass: true
+      });
 
-        // Focus on largest detected objects to avoid noise
-        detected.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-        const filteredDetected = detected.slice(0, maxTicketsSimultaneous);
+      setLastOcrDiagnostic(ocrResult);
+      setLastRawText(ocrResult.rawText);
 
-        const readSpeedMs = Date.now() - startTime;
+      const readSpeedMs = Date.now() - startTime;
 
-        // Auto-tuning & Signal Acquisition logic
-        if (filteredDetected.length > 0) {
-          consecutiveFailuresRef.current = 0;
-          if (autoTuningStatus === 'searching') {
-            setAutoTuningStatus('locked');
-            setTimeout(() => {
-              addLog(`[Auto-Ajuste] ¡Señal recuperada! Filtros adaptativos fijados de manera inteligente.`);
-            }, 0);
+      // Register top candidate in temporal tracker
+      const { lockedCandidate, stableCount, requiredCount } = temporalTrackerRef.current.registerCandidate(
+        ocrResult.topCandidate
+      );
+
+      if (ocrResult.status === 'detected' && ocrResult.topCandidate) {
+        const topCand = ocrResult.topCandidate;
+        const candNum = topCand.candidate;
+        const confPct = Math.round(topCand.finalScore * 100);
+
+        setLastDetectedTicket(candNum);
+
+        const bbox = topCand.bbox || { x0: 0, y0: 0, x1: cropWidth, y1: cropHeight };
+        setRecognizedTickets([
+          {
+            number: candNum,
+            confidence: confPct,
+            x: cropX + bbox.x0,
+            y: cropY + bbox.y0,
+            w: Math.max(40, bbox.x1 - bbox.x0),
+            h: Math.max(30, bbox.y1 - bbox.y0)
           }
-        } else {
-          consecutiveFailuresRef.current += 1;
-          if (autoTuningEnabled && consecutiveFailuresRef.current >= 3) {
-            setAutoTuningStatus('searching');
-            const cycle = consecutiveFailuresRef.current % 4;
-            let nextContrast = s.contrast;
-            let nextBrightness = s.brightness;
-            let nextThreshold = s.binarizeThreshold;
+        ]);
 
-            if (cycle === 1) {
-              nextContrast = Math.min(100, s.contrast + 12);
-              nextBrightness = Math.max(0, s.brightness - 4);
-              setTimeout(() => addLog(`[Auto-Ajuste] Buscando señal... Modo Contraste Reforzado (+12)`), 0);
-            } else if (cycle === 2) {
-              nextContrast = Math.max(30, s.contrast - 8);
-              nextBrightness = Math.min(50, s.brightness + 8);
-              setTimeout(() => addLog(`[Auto-Ajuste] Buscando señal... Modo Brillo Incrementado (+8)`), 0);
-            } else if (cycle === 3) {
-              nextThreshold = Math.min(200, s.binarizeThreshold + 15);
-              setTimeout(() => addLog(`[Auto-Ajuste] Buscando señal... Adaptando umbral de binarización (+15)`), 0);
+        updateStats(true, confPct, readSpeedMs);
+
+        if (lockedCandidate) {
+          const numToAdd = lockedCandidate.candidate;
+          const now = Date.now();
+          const cooldownMs = 2500; // Cooldown for the SAME ticket number only
+          const lastSeen = recentDetectionsRef.current[numToAdd] || 0;
+          const isDifferentTicket = lastAddedTicketRef.current !== numToAdd;
+          const canAdd = isDifferentTicket || (now - lastSeen > cooldownMs);
+
+          if (canAdd && isValidTicketNumber(numToAdd)) {
+            recentDetectionsRef.current[numToAdd] = now;
+            setRecentDetections((prev) => ({ ...prev, [numToAdd]: now }));
+            lastAddedTicketRef.current = numToAdd;
+
+            if (!existingTicketNumbers.has(numToAdd)) {
+              onAddTicket(numToAdd, true);
+              addLog(`🟢 [OCR Éxito] Ticket #${numToAdd} detectado y publicado (Confianza: ${Math.round(lockedCandidate.finalScore * 100)}%)`);
             } else {
-              // Reset to active profile base parameters
-              const activeProf = profiles.find(p => p.id === activeProfileId);
-              if (activeProf) {
-                nextContrast = activeProf.contrast;
-                nextBrightness = activeProf.brightness;
-                nextThreshold = activeProf.binarizeThreshold;
-              }
-              setTimeout(() => addLog(`[Auto-Ajuste] Buscando señal... Reiniciando filtros a valor base`), 0);
+              addLog(`ℹ Ticket #${numToAdd} ya activo en el sistema.`);
             }
-
-            setContrast(nextContrast);
-            setBrightness(nextBrightness);
-            setBinarizeThreshold(nextThreshold);
           }
-        }
-
-        // Apply consecutive frame stability validation
-        const verifiedTickets: typeof filteredDetected = [];
-        filteredDetected.forEach((item) => {
-          const numStr = item.number;
-          const conf = item.confidence;
-          const now = Date.now();
-          const buf = stableFrameBufferRef.current;
-
-          // Clear expired buffer tracks
-          Object.keys(buf).forEach(k => {
-            if (now - buf[k].lastSeen > 2500) {
-              delete buf[k];
-            }
-          });
-
-          if (!buf[numStr]) {
-            buf[numStr] = { count: 1, maxConfidence: conf, lastSeen: now };
-            setTimeout(() => {
-              addLog(`[Validación] Detectado #${numStr}. Estabilizando señal (${buf[numStr].count}/${s.stableFrameCount} frames)`);
-            }, 0);
-          } else {
-            buf[numStr].count += 1;
-            buf[numStr].maxConfidence = Math.max(buf[numStr].maxConfidence, conf);
-            buf[numStr].lastSeen = now;
-            const currentCount = buf[numStr].count;
-            setTimeout(() => {
-              addLog(`[Validación] Estabilizando #${numStr} (${currentCount}/${s.stableFrameCount} frames)`);
-            }, 0);
-          }
-
-          if (buf[numStr].count >= s.stableFrameCount) {
-            verifiedTickets.push(item);
-          }
-        });
-
-        setRecognizedTickets(verifiedTickets);
-
-        // Update success/failure stats
-        if (verifiedTickets.length > 0) {
-          const topConf = verifiedTickets[0].confidence;
-          updateStats(true, topConf, readSpeedMs);
-        } else if (filteredDetected.length > 0) {
-          // Candidates found but not stable yet
-          const topConf = filteredDetected[0].confidence;
-          updateStats(false, topConf, readSpeedMs);
         } else {
-          updateStats(false, 0, readSpeedMs);
+          addLog(`[Validación Estabilidad] Detectado #${candNum}. Estabilizando frame (${stableCount}/${requiredCount})`);
         }
-
-        // Handle cooldown state updates & duplicate suppression
-        setRecentDetections((prev) => {
-          const now = Date.now();
-          const cooldownPeriod = 8000; // 8 seconds cooldown per ticket number
-          const next = { ...prev };
-
-          // Clear expired cooldowns
-          Object.keys(next).forEach((k) => {
-            if (now - next[k] > cooldownPeriod) {
-              delete next[k];
-            }
-          });
-
-          // Check if any recognized ticket is new
-          const newlyDetected = verifiedTickets.filter((item) => {
-            const lastSeen = next[item.number] || 0;
-            return now - lastSeen > cooldownPeriod;
-          });
-
-          if (newlyDetected.length > 0) {
-            newlyDetected.forEach((item) => {
-              next[item.number] = now;
-            });
-
-            // Capture training snippet for AI learning dataset
-            try {
-              const snippetDataUrl = cropCanvas.toDataURL('image/jpeg', 0.65);
-              const firstItem = newlyDetected[0];
-              const newSample: OCRSample = {
-                id: 'sample_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
-                timestamp: Date.now(),
-                imageSnippet: snippetDataUrl,
-                detectedNumber: firstItem.number,
-                rawText: cleanRawText,
-                confidence: Math.round(firstItem.confidence),
-                status: 'correct',
-                appliedParams: {
-                  contrast: s.contrast,
-                  brightness: s.brightness,
-                  binarizeThreshold: s.binarizeThreshold,
-                  sharpenEnabled: s.sharpenEnabled,
-                  noiseRemoval: s.noiseRemoval,
-                  roiWidthPct: s.roiWidthPct,
-                  roiHeightPct: s.roiHeightPct,
-                  minConfidence: s.minConfidence,
-                }
-              };
-
-              setLearningSamples((prev) => {
-                const updated = [newSample, ...prev.slice(0, 79)];
-                dbSaveSettings('ocr_learning_samples', updated).catch(e => console.error(e));
-                if (autoTuningEnabled && updated.length % 3 === 0) {
-                  setTimeout(() => autoCalibrateFromSamples(updated), 100);
-                }
-                return updated;
-              });
-            } catch (e) {
-              console.warn('Could not generate OCR snippet sample:', e);
-            }
-
-            // Trigger ticket queue addition
-            setTimeout(() => {
-              newlyDetected.forEach((item) => {
-                setLastDetectedTicket(item.number);
-                if (!existingTicketNumbers.has(item.number)) {
-                  onAddTicket(item.number, true);
-                  addLog(`✔ Ticket #${item.number} agregado a LISTOS (TV)`);
-                } else {
-                  addLog(`⚠ Ticket #${item.number} ya registrado. Ignorado.`);
-                }
-              });
-            }, 0);
-          } else if (verifiedTickets.length > 0) {
-            setTimeout(() => {
-              const cooldowned = verifiedTickets.map((i) => `#${i.number}`).join(', ');
-              addLog(`Ignorando re-lectura (cooldown): ${cooldowned}`);
-            }, 0);
-          } else {
-            setTimeout(() => {
-              if (cleanRawText && cleanRawText.length > 4) {
-                addLog(`Diagnóstico (Sin número válido): "${cleanRawText.slice(0, 90)}${cleanRawText.length > 90 ? '...' : ''}"`);
-              }
-            }, 0);
-          }
-
-          return next;
-        });
+      } else {
+        setRecognizedTickets([]);
+        updateStats(false, 0, readSpeedMs);
       }
     } catch (err) {
       console.warn('OCR processing failed on frame:', err);
     } finally {
+      isProcessingFrameRef.current = false;
       setIsProcessingFrame(false);
     }
   };
@@ -1352,7 +1028,13 @@ export default function CameraOCR({
       testCanvas.width = cropWidth;
       testCanvas.height = cropHeight;
 
-      preprocessImage(cropCanvas, testCanvas, cand.contrast, cand.brightness, true, cand.threshold, cand.noise);
+      preprocessImage(cropCanvas, testCanvas, {
+        contrast: cand.contrast,
+        brightness: cand.brightness,
+        sharpen: true,
+        binarizeThreshold: cand.threshold,
+        noiseRemoval: cand.noise
+      });
 
       try {
         const res = await worker.recognize(testCanvas);
@@ -1431,7 +1113,7 @@ export default function CameraOCR({
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = reject;
+          reader.onerror = (err) => reject(new Error(`Error al leer archivo ${file.name}: ${err}`));
           reader.readAsDataURL(file);
         });
 
@@ -1451,8 +1133,9 @@ export default function CameraOCR({
 
         // Analyze image on offscreen canvas
         const img = new Image();
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
           img.onload = () => resolve();
+          img.onerror = () => reject(new Error(`Error al cargar la imagen ${file.name}`));
           img.src = dataUrl;
         });
 
@@ -1467,37 +1150,27 @@ export default function CameraOCR({
         if (ctx) {
           ctx.drawImage(img, 0, 0);
 
-          // If worker available, recognize instantly
+          // If worker available, recognize using processTicketOCR engine
           if (worker) {
-            const res = await worker.recognize(canvas);
-            const rawText = res.data?.text || '';
-            const words = res.data?.words || [];
+            const activeProf = profiles.find(p => p.id === activeProfileId);
+            const ocrRes = await processTicketOCR(worker, canvas, {
+              contrast: activeProf?.contrast || contrast,
+              brightness: activeProf?.brightness || brightness,
+              binarizeThreshold: activeProf?.binarizeThreshold || binarizeThreshold,
+              sharpenEnabled: activeProf?.sharpenEnabled ?? sharpenEnabled,
+              noiseRemoval: activeProf?.noiseRemoval ?? noiseRemoval,
+              minConfidence: activeProf?.minConfidence || minConfidence,
+              enableSecondPass: true,
+            });
 
-            words.forEach((w: any) => {
-              const clean = w.text.trim().replace(/^(TICKET|NO|Nº|N°|T|#|C|P|\.)/gi, '').replace(/[^\d]/g, '');
-              if (clean.length >= 1 && clean.length <= 5) {
-                const val = parseInt(clean, 10);
-                const isYear = clean.length === 4 && val >= 2024 && val <= 2035;
-                if (!isNaN(val) && val > 0 && !isYear && !numbersFound.includes(String(val))) {
-                  numbersFound.push(String(val));
-                  maxConf = Math.max(maxConf, Math.round(w.confidence || 80));
-                }
+            ocrRes.allCandidates.forEach(cand => {
+              if (cand.accepted && !numbersFound.includes(cand.candidate)) {
+                numbersFound.push(cand.candidate);
               }
             });
 
-            // Regex backup
-            if (numbersFound.length === 0) {
-              const matches = rawText.match(/(?:TICKET|NO|Nº|N°|T|#|\b)\s*(\d{1,5})\b/gi) || rawText.match(/\b\d{1,5}\b/g) || [];
-              matches.forEach((m: string) => {
-                const digits = m.replace(/[^\d]/g, '');
-                if (digits && digits.length >= 1 && digits.length <= 5) {
-                  const val = parseInt(digits, 10);
-                  const isYear = digits.length === 4 && val >= 2024 && val <= 2035;
-                  if (!isNaN(val) && val > 0 && !isYear && !numbersFound.includes(String(val))) {
-                    numbersFound.push(String(val));
-                  }
-                }
-              });
+            if (ocrRes.topCandidate) {
+              maxConf = Math.round(ocrRes.topCandidate.finalScore * 100);
             }
           }
         }
@@ -1523,10 +1196,12 @@ export default function CameraOCR({
         if (firstNum) {
           addLog(`[Carga Lote] Ticket "${file.name}" -> Detectado #${firstNum}`);
         } else {
-          addLog(`[Carga Lote] Ticket "${file.name}" -> No se halló número claro, ingresa uno manualmente.`);
+          addLog(`[Carga Lote] Ticket "${file.name}" -> No se halló número claro de 3 dígitos, ingresa uno manualmente.`);
         }
-      } catch (e) {
-        console.error('Error processing batch ticket image:', e);
+      } catch (e: any) {
+        const errorDetail = e instanceof Error ? e.message : (typeof e === 'object' && e !== null ? (e.type || JSON.stringify(e)) : String(e));
+        console.error('Error processing batch ticket image:', errorDetail);
+        addLog(`[Carga Lote] Error procesando "${file.name}": ${errorDetail}`);
         setBatchUploadedTickets((prev) =>
           prev.map((item) => (item.id === fileId ? { ...item, status: 'error' } : item))
         );
@@ -1671,6 +1346,20 @@ export default function CameraOCR({
           >
             <Sliders size={14} />
             <span>Ajustes</span>
+          </button>
+
+          {/* Diagnostic Mode trigger */}
+          <button
+            onClick={() => setShowDiagnosticMode(!showDiagnosticMode)}
+            className={`p-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+              showDiagnosticMode
+                ? 'bg-amber-600/20 border-amber-500/40 text-amber-400 font-bold shadow-[0_0_12px_rgba(245,158,11,0.2)]'
+                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Modo de Diagnóstico OCR"
+          >
+            <Brain size={14} className={showDiagnosticMode ? 'text-amber-400 animate-pulse' : ''} />
+            <span>Diagnóstico</span>
           </button>
 
           <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 gap-0.5">
@@ -2857,6 +2546,126 @@ export default function CameraOCR({
           </div>
         )}
       </div>
+
+      {/* Diagnostic Mode Panel */}
+      {showDiagnosticMode && (
+        <div className="mt-3 p-4 bg-slate-950 border border-amber-500/30 rounded-2xl shadow-xl space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <div className="flex items-center gap-2 text-amber-400 font-bold text-xs sm:text-sm">
+              <Brain size={16} className="animate-pulse" />
+              <span>Panel de Diagnóstico OCR (Reglas Estrictas 3 Dígitos)</span>
+            </div>
+            <button
+              onClick={() => setShowDiagnosticMode(false)}
+              className="text-slate-400 hover:text-slate-200 text-xs px-2 py-1 bg-slate-900 rounded-lg border border-slate-800"
+            >
+              Cerrar
+            </button>
+          </div>
+
+          {/* Overall Status Banner */}
+          <div
+            className={`p-3 rounded-xl border flex items-center justify-between text-xs font-bold ${
+              lastOcrDiagnostic?.status === 'detected'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-slate-900/80 border-slate-800 text-slate-400'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Activity
+                size={16}
+                className={lastOcrDiagnostic?.status === 'detected' ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}
+              />
+              <span>
+                {lastOcrDiagnostic?.status === 'detected'
+                  ? `TICKET DETECTADO (#${lastOcrDiagnostic.detectedTicketNumber})`
+                  : 'Buscando ticket válido (o descartando falsos positivos)...'}
+              </span>
+            </div>
+            {lastOcrDiagnostic?.passName && (
+              <span className="text-[10px] bg-slate-950 px-2.5 py-1 rounded-full border border-slate-800 text-indigo-300 font-mono">
+                {lastOcrDiagnostic.passName}
+              </span>
+            )}
+          </div>
+
+          {/* Evaluated Candidates Breakdown */}
+          <div className="space-y-2">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex justify-between items-center">
+              <span>Candidatos Detectados ({lastOcrDiagnostic?.allCandidates.length || 0})</span>
+              <span className="text-[10px] text-slate-500 normal-case font-normal">Prioridad: 0 Falsos Positivos</span>
+            </div>
+
+            {!lastOcrDiagnostic || lastOcrDiagnostic.allCandidates.length === 0 ? (
+              <p className="text-xs text-slate-500 italic p-3 bg-slate-900/40 rounded-xl border border-slate-900 text-center">
+                No se detectaron candidatos de números en la zona de lectura actual.
+              </p>
+            ) : (
+              <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1 scrollbar-thin">
+                {lastOcrDiagnostic.allCandidates.map((cand, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-3 rounded-xl border text-xs flex flex-col gap-1.5 transition-all ${
+                      cand.accepted
+                        ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-800/80 text-slate-400'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-base text-slate-100">#{cand.candidate}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] uppercase font-extrabold ${
+                            cand.accepted
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-red-500/20 text-red-300 border border-red-500/30'
+                          }`}
+                        >
+                          {cand.accepted ? 'VÁLIDO' : 'DESCARTADO'}
+                        </span>
+                      </div>
+                      <span className="font-mono text-amber-300 font-extrabold text-sm">
+                        Score: {Math.round(cand.finalScore * 100)}%
+                      </span>
+                    </div>
+
+                    {cand.rejectReason && (
+                      <div className="text-[11px] text-red-300 font-semibold bg-red-950/40 p-2 rounded-lg border border-red-900/50 flex items-start gap-1.5">
+                        <XCircle size={14} className="text-red-400 shrink-0 mt-0.5" />
+                        <span>Motivo de Descarte: {cand.rejectReason}</span>
+                      </div>
+                    )}
+
+                    {/* Breakdown Scores Grid */}
+                    <div className="grid grid-cols-5 gap-1 text-[10px] bg-slate-950/80 p-2 rounded-lg border border-slate-800/80 text-center font-mono">
+                      <div>
+                        <div className="text-slate-500 text-[9px]">Conf. OCR</div>
+                        <div className="text-slate-200 font-bold">{Math.round(cand.confidenceScore * 100)}%</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-[9px]">Tamaño</div>
+                        <div className="text-slate-200 font-bold">{Math.round(cand.sizeScore * 100)}%</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-[9px]">Contexto</div>
+                        <div className="text-slate-200 font-bold">{Math.round(cand.contextScore * 100)}%</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-[9px]">Aislamiento</div>
+                        <div className="text-slate-200 font-bold">{Math.round(cand.isolationScore * 100)}%</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-[9px]">Posición</div>
+                        <div className="text-slate-200 font-bold">{Math.round(cand.positionScore * 100)}%</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Real-time raw text diagnostic */}
       <div className="mt-3 p-3 bg-slate-950 border border-slate-800/80 rounded-xl flex flex-col gap-1 text-xs">

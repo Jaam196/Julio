@@ -268,6 +268,15 @@ export default function HistoryPanel({ tickets, onDeleteTicket, onClearHistory, 
                             <span>Dispositivo: {item.createdByDevice}</span>
                           </span>
                         )}
+                        {item.zones && item.zones.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {item.zones.map((z, idx) => (
+                              <span key={idx} className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                                📍 {z.zone}: {z.status === 'completed' ? 'Completado' : 'Pendiente'}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </>
                     )}
                   </div>

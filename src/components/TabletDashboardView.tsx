@@ -31,6 +31,7 @@ import ReadyList from './ReadyList';
 import WaitingList from './WaitingList';
 import { speakText, playNotificationSound } from '../utils/audio';
 import { musicController } from '../utils/musicController';
+import { isDuplicateTicket } from '../utils/ticketUtils';
 
 interface TabletDashboardViewProps {
   tickets: Ticket[];
@@ -49,6 +50,8 @@ interface TabletDashboardViewProps {
   onClearWaitingList?: () => void;
   onClearReadyList?: () => void;
   onTogglePriority?: (id: string) => void;
+  onToggleTicketZone?: (ticketId: string, zoneId: string) => void;
+  onUpdateTicketZoneName?: (ticketId: string, zoneId: string, newZoneName: string) => void;
   selectedReadyTicketId?: string | null;
   onSelectReadyTicket?: (id: string) => void;
   selectedWaitingTicketId?: string | null;
@@ -111,7 +114,9 @@ export default function TabletDashboardView({
   onOpenSettingsModal,
   setDeviceMode,
   deviceMode,
-  onCustomAnnouncement
+  onCustomAnnouncement,
+  onToggleTicketZone,
+  onUpdateTicketZoneName
 }: TabletDashboardViewProps) {
   // Custom Voice Announcement state
   const [customTTSInput, setCustomTTSInput] = useState('');
@@ -166,7 +171,7 @@ export default function TabletDashboardView({
     if (!rawNum.trim()) return;
     const cleanNum = rawNum.trim();
 
-    const exists = tickets.some(t => t.number === cleanNum && (t.status === 'active' || t.status === 'waiting'));
+    const exists = isDuplicateTicket(tickets, cleanNum, 'manual');
     if (exists) {
       setManualFeedback({ type: 'error', message: `Ticket #${cleanNum} ya está en la cola` });
       setTimeout(() => setManualFeedback(null), 2000);
@@ -258,7 +263,7 @@ export default function TabletDashboardView({
 
   // Wrapper for OCR detection with auto-confidence check & visual feedback
   const handleOcrAddTicket = (num: string, fromOcr?: boolean) => {
-    const exists = tickets.some(t => t.number === num && (t.status === 'active' || t.status === 'waiting'));
+    const exists = isDuplicateTicket(tickets, num, 'manual');
     if (exists) {
       setDuplicateScanBanner({ number: num, timestamp: Date.now() });
       setTimeout(() => setDuplicateScanBanner(null), 2500);
@@ -703,6 +708,8 @@ export default function TabletDashboardView({
             isWaitlistPaused={isWaitlistPaused}
             onToggleWaitlistPause={onTogglePauseWaitlist}
             onClearList={onClearWaitingList}
+            onToggleTicketZone={onToggleTicketZone}
+            onUpdateTicketZoneName={onUpdateTicketZoneName}
           />
         </div>
 

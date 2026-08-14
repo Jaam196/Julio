@@ -1,3 +1,11 @@
+export interface TicketZone {
+  id: string; // e.g. "504:cocina"
+  zone: string; // e.g. "cocina", "linea", "barra", "manual"
+  status: 'pending' | 'completed';
+  createdAt: number;
+  completedAt?: number;
+}
+
 export interface Ticket {
   id: string;
   number: string;
@@ -13,6 +21,8 @@ export interface Ticket {
   isPriority?: boolean;
   createdByDevice?: string;
   source?: 'HIOPOS' | 'MANUAL' | 'OCR' | 'ANDROID' | string;
+  zones?: TicketZone[];
+  zone?: string;
 }
 
 export type PhraseTypeEs = 

@@ -286,6 +286,98 @@ export default function DevicesPanel({
         </div>
       </div>
 
+      {/* LOCAL MODE DEVICE MANAGEMENT SHORTCUT */}
+      {deviceMode === 'local' && (
+        <div className="space-y-6">
+          <div className="bg-slate-950/60 border border-slate-800 p-5 rounded-2xl flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-slate-800 text-slate-300 rounded-xl">
+                <Laptop size={20} />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-200">Modo Local Autónomo (Este PC)</h4>
+                <p className="text-xs text-slate-400">Todo se ejecuta localmente. Para conectar tablets o pantallas TV, activa el Servidor.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => onSelectMode('server')}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-indigo-600/20 transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <Wifi size={14} />
+              Activar Servidor y Ver Código
+            </button>
+          </div>
+
+          {/* List of Connected and Authorized Devices in Local Mode */}
+          {connectedClients.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <h5 className="font-semibold text-sm text-slate-200">Dispositivos Registrados / Bloqueados ({connectedClients.length})</h5>
+              </div>
+              <div className="border border-slate-800 rounded-xl overflow-hidden divide-y divide-slate-800 bg-slate-950/20">
+                {connectedClients.map((client) => {
+                  const isBlocked = client.status === 'blocked';
+                  return (
+                    <div key={client.id} className="p-4 flex items-center justify-between gap-4 flex-wrap">
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${isBlocked ? 'bg-rose-500/10 text-rose-400' : client.connected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-500'}`}>
+                          {client.type === 'Pantalla Pública' || client.type === 'TV' ? <Tv size={16} /> : <Smartphone size={16} />}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-200 text-xs">{client.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-wide bg-indigo-950/40 border border-indigo-900/30 px-1.5 py-0.2 rounded">
+                              {client.type || 'MANDO'}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <span className={`w-1.5 h-1.5 rounded-full ${isBlocked ? 'bg-rose-500' : client.connected ? 'bg-emerald-500' : 'bg-slate-600'}`}></span>
+                              <span className="text-[10px] text-slate-500">
+                                {isBlocked ? 'Bloqueado' : client.connected ? 'Conectado' : 'Desconectado'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        {isBlocked ? (
+                          <button
+                            onClick={() => onUnblockClient?.(client.id)}
+                            className="px-2.5 py-1.5 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                            title="Desbloquear dispositivo"
+                          >
+                            <ShieldCheck size={13} />
+                            Desbloquear
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => onBlockClient?.(client.id)}
+                            className="px-2.5 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                            title="Bloquear y revocar acceso"
+                          >
+                            <ShieldAlert size={13} />
+                            Bloquear
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onRemoveClient(client.id)}
+                          className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/5 rounded-lg transition-all cursor-pointer"
+                          title="Eliminar de la lista"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* PC SERVER MODE */}
       {deviceMode === 'server' && (
         <div className="space-y-6">

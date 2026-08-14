@@ -4,7 +4,7 @@ import { MusicConfig, YouTubeVideoItem, YouTubeHistoryItem, YouTubeCustomPlaylis
 import { 
   Play, Pause, SkipForward, SkipBack, Music, Volume2, Volume1, VolumeX,
   Youtube, List, Disc, ChevronDown, ChevronUp, Link2, Search, Loader2, X,
-  Star, Clock, Activity, Plus, Trash2, FolderPlus, RotateCcw, AlertTriangle, CheckCircle2, ShieldAlert
+  Star, Clock, Activity, Plus, Trash2, FolderPlus, RotateCcw, AlertTriangle, CheckCircle2, ShieldAlert, Zap
 } from 'lucide-react';
 
 interface BackgroundMusicPlayerProps {
@@ -39,6 +39,32 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
 
   const activeSearchAbortController = useRef<AbortController | null>(null);
 
+  // Autoplay State (stored in localStorage)
+  const [isAutoplayEnabled, setIsAutoplayEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('yt_autoplay_enabled') !== 'false';
+  });
+
+  const toggleAutoplay = () => {
+    const nextVal = !isAutoplayEnabled;
+    setIsAutoplayEnabled(nextVal);
+    localStorage.setItem('yt_autoplay_enabled', String(nextVal));
+  };
+
+  // Autoplay last video on mount if enabled
+  useEffect(() => {
+    if (localStorage.getItem('yt_autoplay_enabled') === 'false') return;
+
+    const timer = setTimeout(() => {
+      const lastUrl = localStorage.getItem('yt_last_video_url') || musicConfig.integratedUrl;
+      if (lastUrl && musicConfig.integratedEnabled && !musicController.getState().isPlaying) {
+        console.log("⚡ Auto-playing last video on app load:", lastUrl);
+        musicController.playUrl(lastUrl);
+      }
+    }, 1200);
+
+    return () => clearTimeout(timer);
+  }, []);
+
   // Sync playerState with musicController
   useEffect(() => {
     const unsubscribe = musicController.subscribe((state) => {
@@ -61,33 +87,28 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
     return () => musicController.setOnConfigChange(() => {});
   }, [onSaveMusicConfig]);
 
-  // Attach YouTube Player Container to Viewport
+  // Attach YouTube Player Container without DOM re-parenting (prevents iframe unloading on search/render)
   useEffect(() => {
     if (!playerState.isYouTube) return;
 
-    const attachTimeout = setTimeout(() => {
+    const updatePosition = () => {
       const ytContainer = document.getElementById('yt-music-player-container');
       const viewport = document.getElementById('yt-player-viewport');
-      
-      if (ytContainer && viewport) {
-        viewport.appendChild(ytContainer);
-        
-        ytContainer.style.position = 'relative';
-        ytContainer.style.width = '100%';
-        ytContainer.style.height = '100%';
+      if (!ytContainer) return;
+
+      if (showVideo && viewport) {
+        const rect = viewport.getBoundingClientRect();
+        ytContainer.style.position = 'fixed';
+        ytContainer.style.top = `${rect.top}px`;
+        ytContainer.style.left = `${rect.left}px`;
+        ytContainer.style.width = `${rect.width}px`;
+        ytContainer.style.height = `${rect.height}px`;
         ytContainer.style.opacity = '1';
         ytContainer.style.pointerEvents = 'auto';
-        ytContainer.style.zIndex = '10';
-        ytContainer.style.bottom = 'auto';
-        ytContainer.style.right = 'auto';
-      }
-    }, 150);
-
-    return () => {
-      clearTimeout(attachTimeout);
-      const ytContainer = document.getElementById('yt-music-player-container');
-      if (ytContainer) {
-        document.body.appendChild(ytContainer);
+        ytContainer.style.zIndex = '999';
+        ytContainer.style.borderRadius = '0.75rem';
+        ytContainer.style.overflow = 'hidden';
+      } else {
         ytContainer.style.position = 'fixed';
         ytContainer.style.bottom = '0';
         ytContainer.style.right = '0';
@@ -98,7 +119,18 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
         ytContainer.style.zIndex = '-9999';
       }
     };
-  }, [playerState.isYouTube]);
+
+    updatePosition();
+    const interval = setInterval(updatePosition, 500);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition);
+    };
+  }, [playerState.isYouTube, showVideo]);
 
   // Perform search with race condition prevention
   const performSearch = async (query: string, isLoadMore = false) => {
@@ -225,6 +257,7 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
   // Play video/url
   const playVideo = (item: YouTubeVideoItem) => {
     addToHistory(item);
+    localStorage.setItem('yt_last_video_url', item.url);
     const updatedConfig = { ...musicConfig, integratedUrl: item.url };
     onSaveMusicConfig(updatedConfig);
     musicController.setConfig(updatedConfig);
@@ -359,7 +392,7 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
       }`}></div>
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-800/60">
+      <div className="flex flex-wrap items-center justify-between mb-4 pb-3 border-b border-slate-800/60 gap-2">
         <div className="flex items-center gap-2">
           <div className="p-1.5 bg-red-500/10 text-red-400 rounded-lg shrink-0">
             <Youtube size={18} />
@@ -370,8 +403,25 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
           </div>
         </div>
 
-        {/* Live Status Indicators */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
+          {/* Botón Reproducción Automática en la Barra Superior */}
+          <button
+            type="button"
+            onClick={toggleAutoplay}
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer active:scale-95 ${
+              isAutoplayEnabled
+                ? 'bg-red-600/20 text-red-400 border-red-500/40 hover:bg-red-600/30 shadow-sm'
+                : 'bg-slate-800/80 text-slate-400 border-slate-700/60 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+            title="Reproduce automáticamente el último vídeo al abrir la web"
+          >
+            <Zap size={13} className={isAutoplayEnabled ? 'text-red-400 fill-red-400/20 animate-pulse' : 'text-slate-500'} />
+            <span>Reproducción Automática</span>
+            <span className={`w-2 h-2 rounded-full ${isAutoplayEnabled ? 'bg-emerald-400 animate-ping' : 'bg-slate-600'}`}></span>
+          </button>
+
+          {/* Live Status Indicators */}
+          <div className="flex items-center gap-1.5">
           {playerState.isLoading ? (
             <span className="px-2 py-0.5 rounded-full text-[9px] font-bold font-mono bg-amber-950 text-amber-400 border border-amber-900/80 flex items-center gap-1">
               <Loader2 size={10} className="animate-spin text-amber-400" />
@@ -396,6 +446,7 @@ export default function BackgroundMusicPlayer({ musicConfig, onSaveMusicConfig }
           )}
         </div>
       </div>
+    </div>
 
       {/* Search Input Bar */}
       <div className="mb-4">
