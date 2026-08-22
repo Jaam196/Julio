@@ -31,7 +31,7 @@ import ReadyList from './ReadyList';
 import WaitingList from './WaitingList';
 import { speakText, playNotificationSound } from '../utils/audio';
 import { musicController } from '../utils/musicController';
-import { isDuplicateTicket } from '../utils/ticketUtils';
+import { isDuplicateTicket, getActiveTicketNumbers } from '../utils/ticketUtils';
 
 interface TabletDashboardViewProps {
   tickets: Ticket[];
@@ -683,7 +683,7 @@ export default function TabletDashboardView({
             <div className="min-h-[300px] rounded-2xl overflow-hidden border border-slate-800 bg-black relative">
               <CameraOCR
                 onAddTicket={handleOcrAddTicket}
-                existingTicketNumbers={new Set(tickets.map(t => t.number))}
+                existingTicketNumbers={getActiveTicketNumbers(tickets)}
                 maxTicketsSimultaneous={appConfig.maxOcrSimultaneous}
                 isOcrPausedProps={isOcrPaused}
                 onToggleOcrPauseProps={setIsOcrPaused}

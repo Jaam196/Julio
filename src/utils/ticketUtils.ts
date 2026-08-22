@@ -1,6 +1,59 @@
 import { Ticket, TicketZone } from '../types';
 
 /**
+ * Checks if a ticket is currently ACTIVE in circulation.
+ * Active states: 'waiting', 'active', 'pending', 'missing'.
+ * Non-active / completed / archived states: 'delivered', 'deleted_pending'.
+ */
+export function isActiveTicket(ticket: Ticket | null | undefined): boolean {
+  if (!ticket) return false;
+  return ticket.status === 'waiting' || ticket.status === 'active' || ticket.status === 'pending' || ticket.status === 'missing';
+}
+
+/**
+ * Returns all currently active tickets from an array.
+ */
+export function getActiveTickets(tickets: Ticket[]): Ticket[] {
+  if (!Array.isArray(tickets)) return [];
+  return tickets.filter(isActiveTicket);
+}
+
+/**
+ * Returns a Set of active ticket number strings (e.g. Set {"657", "001", "157"}).
+ * Reused numbers that are completed/delivered in history are EXCLUDED, so they can re-enter.
+ */
+export function getActiveTicketNumbers(tickets: Ticket[]): Set<string> {
+  if (!Array.isArray(tickets)) return new Set();
+  const set = new Set<string>();
+  for (const t of tickets) {
+    if (isActiveTicket(t) && t.number) {
+      const clean = String(t.number).trim();
+      set.add(clean);
+      // Also add leading zeros normalized if 1-3 digits
+      const parsed = parseInt(clean, 10);
+      if (!isNaN(parsed)) {
+        set.add(String(parsed).padStart(3, '0'));
+        set.add(String(parsed));
+      }
+    }
+  }
+  return set;
+}
+
+/**
+ * Normalizes ticket numbers to standard 3-digit format (000-999).
+ */
+export function formatTicketNumber(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const str = String(value).trim();
+  const num = parseInt(str, 10);
+  if (!isNaN(num) && num >= 0 && num <= 999) {
+    return String(num).padStart(3, '0');
+  }
+  return str;
+}
+
+/**
  * Strict validator for restaurant ticket numbers.
  * Enforces ALWAYS EXACTLY 3 digits (000-999).
  */
@@ -73,15 +126,14 @@ export function getPendingZones(ticket: Ticket): TicketZone[] {
  * Only checks ACTIVE tickets (waiting, pending, active, missing).
  */
 export function isDuplicateTicket(tickets: Ticket[], ticketNumber: string, zone?: string | null): boolean {
-  const normNum = String(parseInt(ticketNumber, 10) || ticketNumber).trim();
+  const normNum = formatTicketNumber(ticketNumber);
   const targetZoneNorm = normalizeZone(zone);
 
   return tickets.some((t) => {
-    const isActive = t.status === 'waiting' || t.status === 'active' || t.status === 'pending' || t.status === 'missing';
-    if (!isActive) return false;
+    if (!isActiveTicket(t)) return false;
 
-    const tNorm = String(parseInt(t.number, 10) || t.number).trim();
-    if (tNorm !== normNum) return false;
+    const tNorm = formatTicketNumber(t.number);
+    if (tNorm !== normNum && String(t.number).trim() !== String(ticketNumber).trim()) return false;
 
     const zones = getTicketZones(t);
     return zones.some((z) => normalizeZone(z.zone) === targetZoneNorm && z.status === 'pending');
@@ -101,13 +153,12 @@ export function sanitizeAndMergeTickets(tickets: Ticket[]): Ticket[] {
   for (const t of tickets) {
     if (!t || t.number === undefined || t.number === null) continue;
 
-    const isActiveStatus = t.status === 'waiting' || t.status === 'active' || t.status === 'pending' || t.status === 'missing';
-    if (!isActiveStatus) {
+    if (!isActiveTicket(t)) {
       nonActiveTickets.push(t);
       continue;
     }
 
-    const normNum = String(parseInt(t.number, 10) || t.number).trim();
+    const normNum = formatTicketNumber(t.number);
     if (!normNum || normNum === 'NaN') continue;
 
     if (!activeMap.has(normNum)) {
@@ -170,14 +221,14 @@ export function hasZoneInTicket(ticket: Ticket, zoneName: string): boolean {
 }
 
 /**
- * Finds an active ticket with ticketNumber (waiting, pending, active).
+ * Finds an active ticket with ticketNumber (waiting, pending, active, missing).
  */
 export function findActiveTicketByNumber(tickets: Ticket[], ticketNumber: string): Ticket | undefined {
-  const normNum = String(parseInt(ticketNumber, 10) || ticketNumber).trim();
+  const normNum = formatTicketNumber(ticketNumber);
   return tickets.find((t) => {
-    const tNorm = String(parseInt(t.number, 10) || t.number).trim();
-    const isActiveStatus = t.status === 'waiting' || t.status === 'active' || t.status === 'pending';
-    return (tNorm === normNum || t.number === ticketNumber) && isActiveStatus;
+    if (!isActiveTicket(t)) return false;
+    const tNorm = formatTicketNumber(t.number);
+    return tNorm === normNum || String(t.number).trim() === String(ticketNumber).trim();
   });
 }
 

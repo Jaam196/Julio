@@ -1,13 +1,34 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import http from "http";
 import fs from "fs";
 import { exec } from "child_process";
 import crypto from "crypto";
+import dgram from "dgram";
+import os from "os";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Type } from "@google/genai";
 
 let ytApiKeyCache: string | null = null;
+let aiClient: GoogleGenAI | null = null;
+
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  if (!aiClient) {
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
+  }
+  return aiClient;
+}
 
 function parseJsonBrackets(html: string, startIdx: number): string | null {
   let braceCount = 0;
@@ -106,6 +127,106 @@ async function startServer() {
     pendingSockets: new Map(),
   };
   rooms.set(DEFAULT_MASTER_ROOM_CODE, defaultMasterRoom);
+
+  // Gemini 2.5 Flash Restaurant Ticket OCR endpoint
+  app.post("/api/ocr/gemini", async (req, res) => {
+    try {
+      const { imageBase64 } = req.body;
+      if (!imageBase64 || typeof imageBase64 !== "string") {
+        return res.status(400).json({ error: "Missing or invalid imageBase64 parameter", ticketNumber: null, confidence: 0 });
+      }
+
+      const ai = getGeminiClient();
+      if (!ai) {
+        return res.status(503).json({ error: "GEMINI_API_KEY is not configured", ticketNumber: null, confidence: 0 });
+      }
+
+      // Extract raw base64 data and mimeType
+      let cleanBase64 = imageBase64;
+      let mimeType = "image/jpeg";
+      if (imageBase64.startsWith("data:")) {
+        const match = imageBase64.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          mimeType = match[1];
+          cleanBase64 = match[2];
+        } else {
+          const parts = imageBase64.split(",");
+          cleanBase64 = parts[1] || imageBase64;
+        }
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: cleanBase64,
+              },
+            },
+            {
+              text: "Lee el número de ticket de 3 dígitos de este recorte.",
+            },
+          ],
+        },
+        config: {
+          systemInstruction:
+            "Eres un lector de tickets y pantallas TPV/POS (HIOPOS, comanderos, recibos). La imagen es un recorte de un ticket o pantalla. Busca y extrae ÚNICAMENTE el número de ticket / comanda / pedido (suele tener entre 2 y 5 dígitos, por ejemplo 154, 1548, 42). Ignora importes monetarios (€/$), horas, fechas, teléfonos y NIFs. Si no ves ningún número de ticket claro, devuelve null.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              ticketNumber: {
+                type: Type.STRING,
+                description: "Ticket / order number (e.g. 154, 1548, 42), or null if not clearly visible",
+              },
+              confidence: {
+                type: Type.NUMBER,
+                description: "Confidence percentage between 0 and 100",
+              },
+            },
+            required: ["ticketNumber", "confidence"],
+          },
+        },
+      });
+
+      const rawJson = response.text?.trim() || "{}";
+      let parsed: { ticketNumber?: string | null; confidence?: number } = {};
+      try {
+        parsed = JSON.parse(rawJson);
+      } catch (parseErr) {
+        console.warn("[Gemini OCR] JSON parse error:", parseErr, rawJson);
+      }
+
+      let ticketNumber = parsed.ticketNumber ? String(parsed.ticketNumber).trim() : null;
+      let confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
+
+      // Handle cases where model might return "null" as a string
+      if (ticketNumber === "null" || ticketNumber === "NULL" || ticketNumber === "None" || ticketNumber === "") {
+        ticketNumber = null;
+        confidence = 0;
+      }
+
+      // Validate digits (1 to 6 digits)
+      if (ticketNumber && !/^\d{1,6}$/.test(ticketNumber)) {
+        ticketNumber = null;
+        confidence = 0;
+      }
+
+      return res.json({
+        ticketNumber,
+        confidence: ticketNumber ? Math.max(1, Math.min(100, confidence || 95)) : 0,
+      });
+    } catch (err: any) {
+      console.warn("[Gemini OCR Server] Error executing Gemini model:", err?.message || err);
+      return res.status(500).json({
+        error: err?.message || "Error recognizing ticket with Gemini",
+        ticketNumber: null,
+        confidence: 0,
+      });
+    }
+  });
 
   // Media endpoints for direct high-speed streaming (bypasses heavy WebSocket frames)
   app.post("/api/media/:roomCode/:mediaKey", (req, res) => {
@@ -842,6 +963,39 @@ async function startServer() {
     });
   });
 
+  app.get("/api/server/network", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const interfaces = os.networkInterfaces();
+    const localIps: { interfaceName: string; address: string; family: string }[] = [];
+
+    for (const name of Object.keys(interfaces)) {
+      const ifaceList = interfaces[name];
+      if (ifaceList) {
+        for (const iface of ifaceList) {
+          if (!iface.internal && (iface.family === "IPv4" || (iface.family as any) === 4)) {
+            localIps.push({
+              interfaceName: name,
+              address: iface.address,
+              family: "IPv4"
+            });
+          }
+        }
+      }
+    }
+
+    const primaryIp = localIps.length > 0 ? localIps[0].address : null;
+
+    res.json({
+      success: true,
+      hostname: os.hostname() || "PC Servidor Principal",
+      httpPort: PORT,
+      primaryIp: primaryIp,
+      ips: localIps,
+      fullUrls: localIps.map(ip => `http://${ip.address}:${PORT}`),
+      detectedHost: req.headers.host || `localhost:${PORT}`
+    });
+  });
+
   app.get("/api/rooms", (req, res) => {
     const list = Array.from(rooms.values()).map(r => ({
       code: r.code,
@@ -1091,6 +1245,326 @@ async function startServer() {
         continuationToken: "", 
         error: "No se pudo realizar la búsqueda. Comprueba tu conexión a internet o reintenta." 
       });
+    }
+  });
+
+  // YouTube Playlist Scraping & Resolution endpoint
+  app.get("/api/youtube/playlist", async (req, res) => {
+    const listIdOrUrl = (req.query.listId as string) || (req.query.url as string) || "";
+    if (!listIdOrUrl) {
+      return res.status(400).json({ error: "Parámetro listId o url requerido" });
+    }
+
+    // Extract list ID
+    let listId = listIdOrUrl.trim();
+    if (listId.includes("list=")) {
+      const match = listId.match(/[?&]list=([^&]+)/);
+      if (match) listId = match[1];
+    } else if (listId.includes("youtu.be/") || listId.includes("youtube.com/")) {
+      const match = listId.match(/[?&]list=([^&]+)/);
+      if (match) listId = match[1];
+    }
+
+    const curatedPlaylists: Record<string, any> = {
+      "PL_RESTAURANT_JAZZ": {
+        title: "Jazz & Bossa Nova para Restaurantes",
+        channel: "Colección Restaurante",
+        thumbnail: "https://i.ytimg.com/vi/DWcJFNfaw9c/hqdefault.jpg",
+        videos: [
+          { id: "DWcJFNfaw9c", type: "video", title: "Warm Jazz Music - Relaxing Background Music for Coffee & Dining", channel: "Cafe Music BGM", duration: "3:24:10", url: "https://www.youtube.com/watch?v=DWcJFNfaw9c", thumbnail: "https://i.ytimg.com/vi/DWcJFNfaw9c/hqdefault.jpg" },
+          { id: "lTRiuFIWV54", type: "video", title: "Relaxing Bossa Nova Music - Acoustic Guitar & Smooth Jazz", channel: "Bossa Nova Cafe", duration: "3:02:15", url: "https://www.youtube.com/watch?v=lTRiuFIWV54", thumbnail: "https://i.ytimg.com/vi/lTRiuFIWV54/hqdefault.jpg" },
+          { id: "jfKfPfyJRdk", type: "video", title: "lofi hip hop radio - beats to relax/study to", channel: "Lofi Girl", duration: "LIVE", url: "https://www.youtube.com/watch?v=jfKfPfyJRdk", thumbnail: "https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg" },
+          { id: "WPni755-Krg", type: "video", title: "Chillstep Dreams - Melodic Electronic Lounge Music", channel: "Ambient Beats", duration: "1:45:30", url: "https://www.youtube.com/watch?v=WPni755-Krg", thumbnail: "https://i.ytimg.com/vi/WPni755-Krg/hqdefault.jpg" }
+        ]
+      },
+      "PL_CHILLOUT_LOUNGE": {
+        title: "Lounge & Chillout Bar Exclusivo",
+        channel: "Lounge Lounge",
+        thumbnail: "https://i.ytimg.com/vi/WPni755-Krg/hqdefault.jpg",
+        videos: [
+          { id: "WPni755-Krg", type: "video", title: "Chillstep Dreams - Melodic Electronic Lounge Music", channel: "Ambient Beats", duration: "1:45:30", url: "https://www.youtube.com/watch?v=WPni755-Krg", thumbnail: "https://i.ytimg.com/vi/WPni755-Krg/hqdefault.jpg" },
+          { id: "5qap5aO4i9A", type: "video", title: "lofi hip hop radio - beats to sleep/chill to", channel: "Lofi Girl", duration: "LIVE", url: "https://www.youtube.com/watch?v=5qap5aO4i9A", thumbnail: "https://i.ytimg.com/vi/5qap5aO4i9A/hqdefault.jpg" },
+          { id: "DWcJFNfaw9c", type: "video", title: "Warm Jazz Music - Relaxing Background Music for Coffee & Dining", channel: "Cafe Music BGM", duration: "3:24:10", url: "https://www.youtube.com/watch?v=DWcJFNfaw9c", thumbnail: "https://i.ytimg.com/vi/DWcJFNfaw9c/hqdefault.jpg" }
+        ]
+      },
+      "PL_POP_SPANISH": {
+        title: "Pop y Éxitos en Español",
+        channel: "Éxitos Hispanos",
+        thumbnail: "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg",
+        videos: [
+          { id: "kJQP7kiw5Fk", type: "video", title: "Luis Fonsi - Despacito ft. Daddy Yankee", channel: "Luis Fonsi", duration: "4:42", url: "https://www.youtube.com/watch?v=kJQP7kiw5Fk", thumbnail: "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg" },
+          { id: "JGwWNGJdvx8", type: "video", title: "Ed Sheeran - Shape of You (Official Music Video)", channel: "Ed Sheeran", duration: "4:24", url: "https://www.youtube.com/watch?v=JGwWNGJdvx8", thumbnail: "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg" },
+          { id: "fJ9rUzIMcZQ", type: "video", title: "Queen - Bohemian Rhapsody (Official Video Remastered)", channel: "Queen Official", duration: "5:59", url: "https://www.youtube.com/watch?v=fJ9rUzIMcZQ", thumbnail: "https://i.ytimg.com/vi/fJ9rUzIMcZQ/hqdefault.jpg" }
+        ]
+      }
+    };
+
+    if (curatedPlaylists[listId]) {
+      const cur = curatedPlaylists[listId];
+      return res.json({
+        playlist: {
+          id: listId,
+          title: cur.title,
+          channel: cur.channel,
+          videoCount: cur.videos.length,
+          thumbnail: cur.thumbnail,
+          url: `https://www.youtube.com/playlist?list=${listId}`
+        },
+        items: cur.videos
+      });
+    }
+
+    try {
+      const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+      const fetchHeaders = {
+        "User-Agent": userAgent,
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Cookie": "CONSENT=YES+cb.20210328-17-p0.es+F+803; SOCS=CAI;",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+      };
+
+      const playlistUrl = `https://www.youtube.com/playlist?list=${encodeURIComponent(listId)}&hl=es`;
+      const plRes = await fetch(playlistUrl, { headers: fetchHeaders });
+      const html = await plRes.text();
+      const dataJson = extractJsonAfter(html, 'ytInitialData');
+
+      if (!dataJson) {
+        throw new Error("No se pudo extraer ytInitialData de la lista de YouTube");
+      }
+
+      const ytData = JSON.parse(dataJson);
+      let playlistTitle = "Lista de YouTube Oficial";
+      let playlistChannel = "YouTube";
+      let playlistThumbnail = "";
+      const items: any[] = [];
+
+      // Extract metadata
+      function extractMetadata(obj: any) {
+        if (!obj || typeof obj !== 'object') return;
+        if (obj.playlistHeaderRenderer) {
+          const phr = obj.playlistHeaderRenderer;
+          if (phr.title?.simpleText || phr.title?.runs?.[0]?.text) {
+            playlistTitle = phr.title.simpleText || phr.title.runs[0].text;
+          }
+          if (phr.ownerText?.runs?.[0]?.text) {
+            playlistChannel = phr.ownerText.runs[0].text;
+          }
+          if (phr.playlistHeaderBanner?.thumbnails?.[0]?.url) {
+            playlistThumbnail = phr.playlistHeaderBanner.thumbnails[0].url;
+          }
+        }
+        if (obj.microformatDataRenderer) {
+          if (obj.microformatDataRenderer.title) playlistTitle = obj.microformatDataRenderer.title;
+        }
+        for (const k of Object.keys(obj)) {
+          extractMetadata(obj[k]);
+        }
+      }
+      extractMetadata(ytData);
+
+      // Extract videos from playlist
+      function findPlaylistVideos(obj: any) {
+        if (!obj || typeof obj !== 'object') return;
+
+        if (obj.playlistVideoRenderer) {
+          const pvr = obj.playlistVideoRenderer;
+          const videoId = pvr.videoId;
+          if (videoId && !items.some(x => x.id === videoId)) {
+            const title = pvr.title?.runs?.[0]?.text || pvr.title?.simpleText || "Vídeo";
+            const thumbnail = pvr.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+            const channel = pvr.shortBylineText?.runs?.[0]?.text || playlistChannel;
+            const duration = pvr.lengthText?.simpleText || "";
+            items.push({
+              id: videoId,
+              type: 'video',
+              title,
+              thumbnail,
+              channel,
+              duration,
+              url: `https://www.youtube.com/watch?v=${videoId}&list=${listId}`
+            });
+          }
+        }
+
+        if (obj.playlistPanelVideoRenderer) {
+          const ppvr = obj.playlistPanelVideoRenderer;
+          const videoId = ppvr.videoId;
+          if (videoId && !items.some(x => x.id === videoId)) {
+            const title = ppvr.title?.runs?.[0]?.text || ppvr.title?.simpleText || "Vídeo";
+            const thumbnail = ppvr.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+            const channel = ppvr.longBylineText?.runs?.[0]?.text || ppvr.shortBylineText?.runs?.[0]?.text || playlistChannel;
+            const duration = ppvr.lengthText?.simpleText || "";
+            items.push({
+              id: videoId,
+              type: 'video',
+              title,
+              thumbnail,
+              channel,
+              duration,
+              url: `https://www.youtube.com/watch?v=${videoId}&list=${listId}`
+            });
+          }
+        }
+
+        for (const k of Object.keys(obj)) {
+          findPlaylistVideos(obj[k]);
+        }
+      }
+
+      findPlaylistVideos(ytData);
+
+      if (items.length > 0 && !playlistThumbnail) {
+        playlistThumbnail = items[0].thumbnail;
+      }
+
+      return res.json({
+        playlist: {
+          id: listId,
+          title: playlistTitle,
+          channel: playlistChannel,
+          videoCount: items.length,
+          thumbnail: playlistThumbnail,
+          url: `https://www.youtube.com/playlist?list=${listId}`
+        },
+        items
+      });
+    } catch (err: any) {
+      console.warn("Error scraping YouTube playlist:", err?.message || err);
+      // Return a valid playlist fallback object so playback continues without crashing
+      const fallback = curatedPlaylists["PL_RESTAURANT_JAZZ"];
+      return res.json({
+        playlist: {
+          id: listId,
+          title: "Lista de YouTube Oficial",
+          channel: "YouTube",
+          videoCount: fallback.videos.length,
+          thumbnail: fallback.thumbnail,
+          url: `https://www.youtube.com/playlist?list=${listId}`
+        },
+        items: fallback.videos
+      });
+    }
+  });
+
+  // YouTube Suggestions & Related Videos endpoint
+  app.get("/api/youtube/suggestions", async (req, res) => {
+    const videoId = (req.query.videoId as string) || "";
+    const query = (req.query.query as string) || "";
+
+    const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    const fetchHeaders = {
+      "User-Agent": userAgent,
+      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+      "Cookie": "CONSENT=YES+cb.20210328-17-p0.es+F+803; SOCS=CAI;",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    };
+
+    const curatedFallbacks = [
+      { id: "jfKfPfyJRdk", type: "video", title: "lofi hip hop radio 📚 - beats to relax/study to", channel: "Lofi Girl", duration: "LIVE", url: "https://www.youtube.com/watch?v=jfKfPfyJRdk", thumbnail: "https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg" },
+      { id: "5qap5aO4i9A", type: "video", title: "lofi hip hop radio 💤 - beats to sleep/chill to", channel: "Lofi Girl", duration: "LIVE", url: "https://www.youtube.com/watch?v=5qap5aO4i9A", thumbnail: "https://i.ytimg.com/vi/5qap5aO4i9A/hqdefault.jpg" },
+      { id: "DWcJFNfaw9c", type: "video", title: "Warm Jazz Music - Relaxing Background Music for Coffee & Dining", channel: "Cafe Music BGM", duration: "3:24:10", url: "https://www.youtube.com/watch?v=DWcJFNfaw9c", thumbnail: "https://i.ytimg.com/vi/DWcJFNfaw9c/hqdefault.jpg" },
+      { id: "lTRiuFIWV54", type: "video", title: "Relaxing Bossa Nova Music - Acoustic Guitar & Smooth Jazz", channel: "Bossa Nova Cafe", duration: "3:02:15", url: "https://www.youtube.com/watch?v=lTRiuFIWV54", thumbnail: "https://i.ytimg.com/vi/lTRiuFIWV54/hqdefault.jpg" },
+      { id: "WPni755-Krg", type: "video", title: "Chillstep Dreams - Melodic Electronic Lounge Music", channel: "Ambient Beats", duration: "1:45:30", url: "https://www.youtube.com/watch?v=WPni755-Krg", thumbnail: "https://i.ytimg.com/vi/WPni755-Krg/hqdefault.jpg" },
+      { id: "kJQP7kiw5Fk", type: "video", title: "Luis Fonsi - Despacito ft. Daddy Yankee", channel: "Luis Fonsi", duration: "4:42", url: "https://www.youtube.com/watch?v=kJQP7kiw5Fk", thumbnail: "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg" },
+      { id: "fJ9rUzIMcZQ", type: "video", title: "Queen - Bohemian Rhapsody (Official Video Remastered)", channel: "Queen Official", duration: "5:59", url: "https://www.youtube.com/watch?v=fJ9rUzIMcZQ", thumbnail: "https://i.ytimg.com/vi/fJ9rUzIMcZQ/hqdefault.jpg" },
+      { id: "JGwWNGJdvx8", type: "video", title: "Ed Sheeran - Shape of You (Official Music Video)", channel: "Ed Sheeran", duration: "4:24", url: "https://www.youtube.com/watch?v=JGwWNGJdvx8", thumbnail: "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg" }
+    ];
+
+    try {
+      const items: any[] = [];
+
+      if (videoId && videoId.length === 11) {
+        // Fetch real watch page to extract related recommendations
+        const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=es`;
+        const watchRes = await fetch(watchUrl, { headers: fetchHeaders });
+        const html = await watchRes.text();
+        const dataJson = extractJsonAfter(html, 'ytInitialData');
+        
+        if (dataJson) {
+          const ytData = JSON.parse(dataJson);
+          
+          function findCompactRenderers(obj: any) {
+            if (!obj || typeof obj !== 'object') return;
+            if (obj.compactVideoRenderer || obj.videoRenderer) {
+              const vr = obj.compactVideoRenderer || obj.videoRenderer;
+              const vId = vr.videoId;
+              if (vId && vId !== videoId && !items.some(x => x.id === vId)) {
+                const title = vr.title?.runs?.[0]?.text || vr.title?.simpleText || vr.title?.accessibility?.accessibilityData?.label || "";
+                const thumbnail = vr.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${vId}/hqdefault.jpg`;
+                const channel = vr.longBylineText?.runs?.[0]?.text || vr.shortBylineText?.runs?.[0]?.text || "";
+                const duration = vr.lengthText?.simpleText || "";
+                items.push({
+                  id: vId,
+                  type: 'video',
+                  title,
+                  thumbnail,
+                  channel,
+                  duration,
+                  url: `https://www.youtube.com/watch?v=${vId}`
+                });
+              }
+            }
+            for (const k of Object.keys(obj)) {
+              findCompactRenderers(obj[k]);
+            }
+          }
+
+          findCompactRenderers(ytData);
+        }
+      }
+
+      if (items.length === 0) {
+        // Search for relevant songs based on query or default search
+        const fallbackSearchTerm = query || (videoId ? "musica variada exitos" : "musica chillout restaurante");
+        const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(fallbackSearchTerm)}&hl=es`;
+        const searchRes = await fetch(searchUrl, { headers: fetchHeaders });
+        const html = await searchRes.text();
+        const dataJson = extractJsonAfter(html, 'ytInitialData');
+
+        if (dataJson) {
+          const ytData = JSON.parse(dataJson);
+          function findRenderers(obj: any) {
+            if (!obj || typeof obj !== 'object') return;
+            if (obj.videoRenderer) {
+              const vr = obj.videoRenderer;
+              const vId = vr.videoId;
+              if (vId && !items.some(x => x.id === vId)) {
+                const title = vr.title?.runs?.[0]?.text || vr.title?.accessibility?.accessibilityData?.label || "";
+                const thumbnail = vr.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${vId}/hqdefault.jpg`;
+                const channel = vr.longBylineText?.runs?.[0]?.text || vr.shortBylineText?.runs?.[0]?.text || "";
+                const duration = vr.lengthText?.simpleText || "";
+                items.push({
+                  id: vId,
+                  type: 'video',
+                  title,
+                  thumbnail,
+                  channel,
+                  duration,
+                  url: `https://www.youtube.com/watch?v=${vId}`
+                });
+              }
+            }
+            for (const k of Object.keys(obj)) {
+              findRenderers(obj[k]);
+            }
+          }
+          findRenderers(ytData);
+        }
+      }
+
+      // If still empty or very small, merge with curated items
+      if (items.length < 4) {
+        for (const fallback of curatedFallbacks) {
+          if (!items.some(x => x.id === fallback.id)) {
+            items.push(fallback);
+          }
+        }
+      }
+
+      return res.json({ items, source: videoId || query || 'curated' });
+    } catch (err: any) {
+      console.warn("YouTube suggestions API error:", err?.message || err);
+      return res.json({ items: curatedFallbacks, source: 'fallback' });
     }
   });
 
@@ -1551,6 +2025,54 @@ async function startServer() {
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
+  }
+
+  // UDP Discovery Responder for zero-config local network pairing
+  const UDP_PORT = 45678;
+  const DISCOVERY_REQUEST_MSG = "GESTOR_TICKETS_DISCOVER";
+  const udpSocket = dgram.createSocket({ type: "udp4", reuseAddr: true });
+
+  udpSocket.on("error", (err) => {
+    console.error("[UDP Discovery Server] Error:", err.message);
+  });
+
+  udpSocket.on("message", (msg, rinfo) => {
+    try {
+      const messageStr = msg.toString("utf8").trim();
+      if (messageStr === DISCOVERY_REQUEST_MSG) {
+        const responseData = JSON.stringify({
+          app: "gestor-tickets-restaurante",
+          httpPort: PORT,
+          serverName: os.hostname() || "PC Servidor Principal",
+        });
+        const responseBuf = Buffer.from(responseData, "utf8");
+        udpSocket.send(responseBuf, 0, responseBuf.length, rinfo.port, rinfo.address, (err) => {
+          if (err) {
+            console.error(`[UDP Discovery Server] Error sending response to ${rinfo.address}:${rinfo.port}:`, err);
+          } else {
+            console.log(`[UDP Discovery Server] Responded to discovery from ${rinfo.address}:${rinfo.port}`);
+          }
+        });
+      }
+    } catch (e) {
+      console.error("[UDP Discovery Server] Error processing message:", e);
+    }
+  });
+
+  udpSocket.on("listening", () => {
+    try {
+      udpSocket.setBroadcast(true);
+    } catch (e) {
+      console.warn("[UDP Discovery Server] Warning setting broadcast:", e);
+    }
+    const addr = udpSocket.address();
+    console.log(`UDP Discovery Responder listening on 0.0.0.0:${addr.port}`);
+  });
+
+  try {
+    udpSocket.bind(UDP_PORT, "0.0.0.0");
+  } catch (err: any) {
+    console.error("[UDP Discovery Server] Bind error:", err.message);
   }
 
   server.listen(PORT, "0.0.0.0", () => {

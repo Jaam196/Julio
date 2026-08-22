@@ -129,6 +129,7 @@ export async function processTicketOCR(
     noiseRemoval?: boolean;
     minConfidence?: number;
     enableSecondPass?: boolean;
+    customCorrections?: Record<string, string>;
   } = {}
 ): Promise<TicketOcrResult> {
   const minScoreThreshold = options.minConfidence ? options.minConfidence / 100 : MIN_ACCEPTANCE_SCORE;
@@ -143,7 +144,7 @@ export async function processTicketOCR(
     noiseRemoval: options.noiseRemoval ?? false
   });
 
-  const resPass1 = await executeOcrPass(worker, primaryCanvas, minScoreThreshold);
+  const resPass1 = await executeOcrPass(worker, primaryCanvas, minScoreThreshold, options.customCorrections);
 
   if (resPass1.status === 'detected' && resPass1.topCandidate) {
     return { ...resPass1, passName: 'Pass 1 (Estándar)' };
@@ -156,7 +157,7 @@ export async function processTicketOCR(
     // Try Adaptive Variant (Pass 2)
     const adaptiveVariant = variants.find((v) => v.name === 'pass2_adaptive');
     if (adaptiveVariant) {
-      const resPass2 = await executeOcrPass(worker, adaptiveVariant.canvas, minScoreThreshold);
+      const resPass2 = await executeOcrPass(worker, adaptiveVariant.canvas, minScoreThreshold, options.customCorrections);
       if (resPass2.status === 'detected' && resPass2.topCandidate) {
         return { ...resPass2, passName: 'Pass 2 (Adaptativo)' };
       }
@@ -165,7 +166,7 @@ export async function processTicketOCR(
     // Try Grayscale Variant (Pass 3)
     const grayVariant = variants.find((v) => v.name === 'pass3_grayscale');
     if (grayVariant) {
-      const resPass3 = await executeOcrPass(worker, grayVariant.canvas, minScoreThreshold);
+      const resPass3 = await executeOcrPass(worker, grayVariant.canvas, minScoreThreshold, options.customCorrections);
       if (resPass3.status === 'detected' && resPass3.topCandidate) {
         return { ...resPass3, passName: 'Pass 3 (Escala de Grises)' };
       }
@@ -188,7 +189,8 @@ export async function processTicketOCR(
 async function executeOcrPass(
   worker: any,
   canvas: HTMLCanvasElement,
-  minScoreThreshold: number
+  minScoreThreshold: number,
+  customCorrections?: Record<string, string>
 ): Promise<TicketOcrResult> {
   const result = await worker.recognize(canvas);
   const rawText = result.data?.text || '';
@@ -201,7 +203,7 @@ async function executeOcrPass(
     lineText: w.line?.text || ''
   }));
 
-  const allCandidates = scoreOcrCandidates(rawText, tokens, canvas.height, minScoreThreshold);
+  const allCandidates = scoreOcrCandidates(rawText, tokens, canvas.height, minScoreThreshold, customCorrections);
   const acceptedCandidate = allCandidates.find((c) => c.accepted);
 
   if (acceptedCandidate && isValidTicketNumber(acceptedCandidate.candidate)) {

@@ -23,6 +23,13 @@ public class AndroidBridgeInterface {
     }
 
     @JavascriptInterface
+    public void startScreenCaptureService() {
+        if (activity != null) {
+            activity.startContinuousCapture(2000);
+        }
+    }
+
+    @JavascriptInterface
     public void stopScreenCaptureService() {
         if (activity != null) {
             activity.stopScreenCaptureService();
@@ -30,7 +37,35 @@ public class AndroidBridgeInterface {
     }
 
     @JavascriptInterface
+    public void startContinuousCapture(int intervalMs) {
+        if (activity != null) {
+            activity.startContinuousCapture(intervalMs);
+        }
+    }
+
+    @JavascriptInterface
+    public void stopContinuousCapture() {
+        if (activity != null) {
+            activity.stopContinuousCapture();
+        }
+    }
+
+    @JavascriptInterface
     public void postTicketToNative(String ticketNumber) {
         // Logged or synced with Android system notification / state
+    }
+
+    @JavascriptInterface
+    public void discoverServerOnNetwork() {
+        if (activity != null) {
+            activity.discoverServerOnNetwork();
+        }
+    }
+
+    @JavascriptInterface
+    public void setServerUrl(String url) {
+        if (activity != null && url != null && !url.trim().isEmpty()) {
+            activity.loadServerUrl(url.trim());
+        }
     }
 }

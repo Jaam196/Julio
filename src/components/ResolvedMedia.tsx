@@ -243,7 +243,6 @@ export function ResolvedVideo({ mediaKeyOrUrl, onMediaMissing, className = '', s
   return (
     <video
       ref={videoRef}
-      key={src}
       src={src}
       preload="auto"
       autoPlay

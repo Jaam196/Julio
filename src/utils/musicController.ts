@@ -1,4 +1,5 @@
 import { MusicConfig } from '../types';
+import { youtubePlayerController } from './youtubePlayerController';
 
 declare global {
   interface Window {
@@ -31,10 +32,11 @@ export function parseYouTubeUrl(url: string): { videoId: string | null; playlist
   let playlistId: string | null = null;
 
   if (!url) return { videoId, playlistId };
+  const trimmed = url.trim();
 
   try {
-    if (url.includes('http://') || url.includes('https://')) {
-      const urlObj = new URL(url);
+    if (trimmed.includes('http://') || trimmed.includes('https://')) {
+      const urlObj = new URL(trimmed);
       
       // Extract playlist ID
       playlistId = urlObj.searchParams.get('list');
@@ -53,10 +55,15 @@ export function parseYouTubeUrl(url: string): { videoId: string | null; playlist
         videoId = urlObj.searchParams.get('v');
       }
     } else {
-      if (url.length === 11 && !url.includes('/') && !url.includes('.')) {
-        videoId = url;
-      } else if (url.length > 15 && !url.includes('/') && !url.includes('.')) {
-        playlistId = url;
+      if (trimmed.includes('list=')) {
+        const match = trimmed.match(/[?&]list=([^&]+)/);
+        if (match) playlistId = match[1];
+      } else if (trimmed.startsWith('PL') || trimmed.startsWith('RD') || trimmed.startsWith('OLAK5uy_') || trimmed.startsWith('UU') || trimmed.startsWith('FL') || trimmed.startsWith('LL')) {
+        playlistId = trimmed;
+      } else if (trimmed.length === 11 && !trimmed.includes('/') && !trimmed.includes('.')) {
+        videoId = trimmed;
+      } else if (trimmed.length > 12 && !trimmed.includes('/') && !trimmed.includes('.')) {
+        playlistId = trimmed;
       }
     }
   } catch (e) {
@@ -1159,6 +1166,11 @@ class MusicController {
 
     if (this.activeAnnouncements === 1) {
       this.applyMusicMitigation();
+      try {
+        youtubePlayerController.startAnnouncementDucking(
+          this.config.mode === 'duck60' ? 60 : this.config.mode === 'duck40' ? 40 : 20
+        );
+      } catch (e) {}
     }
   }
 
@@ -1176,6 +1188,9 @@ class MusicController {
 
       this.restoreTimeout = setTimeout(() => {
         this.restoreMusicMitigation();
+        try {
+          youtubePlayerController.stopAnnouncementDucking();
+        } catch (e) {}
         this.restoreTimeout = null;
       }, 1000);
     }

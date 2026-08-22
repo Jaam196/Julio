@@ -36,7 +36,7 @@ export interface CandidateEvaluation {
   lineText?: string;
 }
 
-export const MIN_ACCEPTANCE_SCORE = 0.50; // 50% threshold for valid tickets
+export const MIN_ACCEPTANCE_SCORE = 0.70; // 70% threshold for valid tickets (fast & false-positive resistant)
 
 /**
  * Checks if a string is strictly 3 digits (000-999).
@@ -46,16 +46,51 @@ export function isExactThreeDigits(str: string): boolean {
 }
 
 /**
- * Common OCR character confusion normalization for thermal printers
- * (e.g. 'S' -> '5', 'I'/'l'/'|' -> '1', 'O'/'o' -> '0', 'B' -> '8', 'Z'/'z' -> '2')
+ * Retrieves user-defined or system-learned AI OCR correction rules from localStorage
  */
-export function normalizeOcrDigits(str: string): string {
-  return str
-    .replace(/[S]/g, '5')
+export function getSavedOcrCorrections(): Record<string, string> {
+  try {
+    const saved = localStorage.getItem('ocr_correction_map');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    // Ignore storage parsing issues
+  }
+  return { "8O8": "808", "8B8": "888", "B88": "888", "SS5": "555" };
+}
+
+/**
+ * Applies custom AI adaptive dictionary corrections to a raw string
+ */
+export function applyCustomOcrCorrections(str: string, customCorrections?: Record<string, string>): string {
+  if (!str) return str;
+  const corrections = customCorrections || getSavedOcrCorrections();
+  let result = str.trim().toUpperCase();
+
+  for (const [pattern, replacement] of Object.entries(corrections)) {
+    if (pattern && replacement && result.includes(pattern)) {
+      result = result.split(pattern).join(replacement);
+    }
+  }
+  return result;
+}
+
+/**
+ * Common OCR character confusion normalization for thermal printers
+ * (e.g. 'S'/'s' -> '5', 'I'/'l'/'|'/'!' -> '1', 'O'/'o' -> '0', 'B'/'b' -> '8', 'Z'/'z' -> '2')
+ */
+export function normalizeOcrDigits(str: string, customCorrections?: Record<string, string>): string {
+  const withCustom = applyCustomOcrCorrections(str, customCorrections);
+  return withCustom
+    .replace(/[S]/gi, '5')
     .replace(/[I|l!]/g, '1')
-    .replace(/[O]/g, '0')
+    .replace(/[O]/gi, '0')
     .replace(/[B]/g, '8')
-    .replace(/[Z]/g, '2');
+    .replace(/[Z]/gi, '2');
 }
 
 /**
@@ -65,7 +100,8 @@ export function scoreOcrCandidates(
   rawText: string,
   tokens: RawOcrToken[] = [],
   imageHeight: number = 500,
-  minScoreThreshold: number = MIN_ACCEPTANCE_SCORE
+  minScoreThreshold: number = MIN_ACCEPTANCE_SCORE,
+  customCorrections?: Record<string, string>
 ): CandidateEvaluation[] {
   const evaluations: CandidateEvaluation[] = [];
   const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -86,7 +122,7 @@ export function scoreOcrCandidates(
     if (!rawWord) return;
 
     const lineText = token.lineText || getLineForToken(rawWord, lines);
-    processTokenCandidates(rawWord, token.confidence, token.bbox, lineText, token.lineIndex, medianFontHeight, imageHeight, minScoreThreshold, evaluations);
+    processTokenCandidates(rawWord, token.confidence, token.bbox, lineText, token.lineIndex, medianFontHeight, imageHeight, minScoreThreshold, evaluations, customCorrections);
   });
 
   // 2. Line-by-line parsing: handles words, spaced digits (e.g. "6 5 7"), and prefixed tickets
@@ -96,7 +132,7 @@ export function scoreOcrCandidates(
     words.forEach((word) => {
       const alreadyEvaluated = evaluations.some((e) => e.sourceToken === word && e.lineText === line);
       if (!alreadyEvaluated) {
-        processTokenCandidates(word, 85, undefined, line, lineIdx, medianFontHeight, imageHeight, minScoreThreshold, evaluations);
+        processTokenCandidates(word, 85, undefined, line, lineIdx, medianFontHeight, imageHeight, minScoreThreshold, evaluations, customCorrections);
       }
     });
 
@@ -106,7 +142,7 @@ export function scoreOcrCandidates(
       const mergedDigits = `${spacedMatch[1]}${spacedMatch[2]}${spacedMatch[3]}`;
       const alreadyFound = evaluations.some((e) => e.candidate === mergedDigits && e.lineText === line);
       if (!alreadyFound && !isDateOrTimeOrPriceLine(line)) {
-        processTokenCandidates(mergedDigits, 88, undefined, line, lineIdx, medianFontHeight, imageHeight, minScoreThreshold, evaluations);
+        processTokenCandidates(mergedDigits, 88, undefined, line, lineIdx, medianFontHeight, imageHeight, minScoreThreshold, evaluations, customCorrections);
       }
     }
 
@@ -116,7 +152,7 @@ export function scoreOcrCandidates(
       const candidateNum = prefixMatch[1];
       const alreadyFound = evaluations.some((e) => e.candidate === candidateNum && e.lineText === line);
       if (!alreadyFound) {
-        processTokenCandidates(candidateNum, 92, undefined, line, lineIdx, medianFontHeight, imageHeight, minScoreThreshold, evaluations);
+        processTokenCandidates(candidateNum, 92, undefined, line, lineIdx, medianFontHeight, imageHeight, minScoreThreshold, evaluations, customCorrections);
       }
     }
   });
@@ -150,7 +186,8 @@ function processTokenCandidates(
   medianFontHeight: number,
   imageHeight: number,
   minScoreThreshold: number,
-  outEvaluations: CandidateEvaluation[]
+  outEvaluations: CandidateEvaluation[],
+  customCorrections?: Record<string, string>
 ): void {
   const cleanToken = rawToken.trim();
   const upperToken = cleanToken.toUpperCase();
@@ -176,21 +213,33 @@ function processTokenCandidates(
     /^T\d{3,}/i.test(cleanToken) ||
     /^[A-Z]*\d{4,}/i.test(cleanToken);
 
+  // Apply custom AI replacement / corrections first
+  const correctedToken = applyCustomOcrCorrections(cleanToken, customCorrections);
+
   // Extract all digit sequences from the token
-  const allDigitSequences: string[] = cleanToken.match(/\d+/g) || [];
+  const allDigitSequences: string[] = correctedToken.match(/\d+/g) || [];
   const hasLongDigitSequence = allDigitSequences.some((seq: string) => seq.length >= 4);
 
   // Clean prefixes and extract digits
-  let cleanedDigitsOnly = cleanToken
+  let cleanedDigitsOnly = correctedToken
     .replace(/^(TICKET|PEDIDO|ORDEN|Nº|N°|NO|N|T|#|C|P|\.)/gi, '')
     .replace(/[^\d]/g, '');
 
   // Fallback: If not exact 3 digits, try normalized OCR confusion for 3-character tokens
-  if (cleanedDigitsOnly.length !== 3 && cleanToken.length === 3) {
-    const normalized = normalizeOcrDigits(cleanToken);
+  if (cleanedDigitsOnly.length !== 3 && correctedToken.length === 3) {
+    const normalized = normalizeOcrDigits(correctedToken, customCorrections);
     const normDigits = normalized.replace(/[^\d]/g, '');
     if (normDigits.length === 3) {
       cleanedDigitsOnly = normDigits;
+    }
+  }
+
+  // Also check if after normalization of whole token we get 3 digits
+  if (cleanedDigitsOnly.length !== 3) {
+    const normalizedAll = normalizeOcrDigits(correctedToken, customCorrections);
+    const normAllDigits = normalizedAll.replace(/^(TICKET|PEDIDO|ORDEN|Nº|N°|NO|N|T|#|C|P|\.)/gi, '').replace(/[^\d]/g, '');
+    if (normAllDigits.length === 3) {
+      cleanedDigitsOnly = normAllDigits;
     }
   }
 

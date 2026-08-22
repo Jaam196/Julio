@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Gestor de Tickets</string>
+    <string name="notification_channel_name">Captura de Pantalla OCR</string>
+    <string name="notification_channel_desc">Servicio en segundo plano para lectura de tickets HIOPOS</string>
+    <string name="notification_title">Gestor de Tickets - Lector HIOPOS Activo</string>
+    <string name="notification_text">Escaneando pantalla en segundo plano para detectar tickets automáticamente...</string>
+</resources>

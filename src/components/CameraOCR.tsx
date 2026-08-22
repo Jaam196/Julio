@@ -29,7 +29,8 @@ import {
   Smartphone,
   Monitor,
   Search,
-  StopCircle
+  StopCircle,
+  SwitchCamera
 } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { dbSaveSettings, dbGetSettings } from '../utils/db';
@@ -39,8 +40,10 @@ import {
   isAndroidNativeApp
 } from '../utils/androidBridge';
 import { processTicketOCR, CandidateTemporalTracker, TicketOcrResult, isValidTicketNumber } from '../utils/ticketOCR';
-import { CandidateEvaluation } from '../utils/ticketCandidateScorer';
+import { recognizeTicketWithGemini } from '../utils/geminiOCR';
+import { CandidateEvaluation, getSavedOcrCorrections, MIN_ACCEPTANCE_SCORE } from '../utils/ticketCandidateScorer';
 import { preprocessImage } from '../utils/imagePreprocessing';
+import { formatTicketNumber } from '../utils/ticketUtils';
 
 export interface OCRSample {
   id: string;
@@ -116,8 +119,8 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     roiWidthPct: 85,
     roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 52,
-    stableFrameCount: 1,
+    minConfidence: 70,
+    stableFrameCount: 2,
   },
   {
     id: 'matricial_cocina',
@@ -133,7 +136,7 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     roiWidthPct: 85,
     roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 52,
+    minConfidence: 70,
     stableFrameCount: 2,
   },
   {
@@ -150,8 +153,8 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     roiWidthPct: 85,
     roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 52,
-    stableFrameCount: 1,
+    minConfidence: 70,
+    stableFrameCount: 2,
   },
   {
     id: 'generica',
@@ -167,8 +170,8 @@ const DEFAULT_PROFILES: PrinterProfile[] = [
     roiWidthPct: 85,
     roiHeightPct: 75,
     roiYOffsetPct: 0,
-    minConfidence: 52,
-    stableFrameCount: 1,
+    minConfidence: 70,
+    stableFrameCount: 2,
   },
 ];
 
@@ -187,6 +190,11 @@ export default function CameraOCR({
 
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
 
   // Self-contained state fallback for when parent doesn't control pausing
   const [isOcrPausedState, setIsOcrPausedState] = useState(false);
@@ -237,16 +245,17 @@ export default function CameraOCR({
   const [activeProfileId, setActiveProfileId] = useState<string>('termica_barra');
   const [isTrainingActive, setIsTrainingActive] = useState(false);
   const [noiseRemoval, setNoiseRemoval] = useState(false);
-  const [minConfidence, setMinConfidence] = useState(52);
-  const [stableFrameCount, setStableFrameCount] = useState(1);
+  const [minConfidence, setMinConfidence] = useState(70);
+  const [stableFrameCount, setStableFrameCount] = useState(2);
   const [autoTuningEnabled, setAutoTuningEnabled] = useState(true);
   const [autoTuningStatus, setAutoTuningStatus] = useState<'locked' | 'searching'>('locked');
 
   // Real-time Diagnostic Mode & Temporal Candidate Memory Tracker
   const [showDiagnosticMode, setShowDiagnosticMode] = useState(false);
   const [lastOcrDiagnostic, setLastOcrDiagnostic] = useState<TicketOcrResult | null>(null);
+  const lastGeminiCallTimeRef = useRef<number>(0);
   const temporalTrackerRef = useRef<CandidateTemporalTracker>(
-    new CandidateTemporalTracker({ requiredStableFrames: stableFrameCount })
+    new CandidateTemporalTracker({ requiredStableFrames: 2 })
   );
 
   useEffect(() => {
@@ -421,14 +430,14 @@ export default function CameraOCR({
     roiWidthPct: 85,
     roiHeightPct: 75,
     roiYOffsetPct: 0,
-    contrast: 65,
-    brightness: 15,
+    contrast: 70,
+    brightness: 12,
     rotation: 0,
     binarizeThreshold: 128,
     sharpenEnabled: true,
     noiseRemoval: false,
-    minConfidence: 52,
-    stableFrameCount: 1,
+    minConfidence: 70,
+    stableFrameCount: 2,
   });
 
   // Mirror sliders into the Ref to ensure continuous scanning loops read the latest values instantly
@@ -544,12 +553,49 @@ export default function CameraOCR({
     };
   }, []);
 
-  // Auto-start camera stream automatically on mount
+  // Helper to enumerate all available video devices
+  const refreshVideoDevices = async () => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+        setVideoDevices(videoInputs);
+      }
+    } catch (e) {
+      console.warn('Failed to enumerate video devices:', e);
+    }
+  };
+
+  // Listen to device changes (e.g. plugging USB camera or connecting webcam)
+  useEffect(() => {
+    refreshVideoDevices();
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', refreshVideoDevices);
+      return () => {
+        navigator.mediaDevices.removeEventListener('devicechange', refreshVideoDevices);
+      };
+    }
+  }, []);
+
+  // Sync video element with stream automatically
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch((e) => console.warn('Video stream play:', e));
+    }
+  }, [stream, isCameraActive, ocrSource]);
+
+  // Auto-start camera stream gracefully on mount
   useEffect(() => {
     let isMounted = true;
     const autoIgnite = async () => {
       if (!isCameraActive && !useSimulator && isMounted) {
-        await startCamera();
+        // Try gentle initial start; if permission denied or requires gesture, handle silently
+        try {
+          await startCamera(undefined, undefined, false);
+        } catch (e) {
+          // Gracefully caught
+        }
       }
     };
     autoIgnite();
@@ -565,42 +611,146 @@ export default function CameraOCR({
     ]);
   };
 
-  // Start Camera Stream
-  const startCamera = async () => {
-    try {
-      setRecognizedTickets([]);
-      const constraints: MediaStreamConstraints = {
-        video: {
-          facingMode: 'environment', // Rear camera if available
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-      };
+  // Start Camera Stream with robust fallback (ideal constraints -> generic -> video: true)
+  const startCamera = async (targetDeviceId?: string, targetFacingMode?: 'environment' | 'user', isExplicitUserGesture = true) => {
+    const desiredDeviceId = targetDeviceId !== undefined ? targetDeviceId : selectedDeviceId;
+    const desiredFacing = targetFacingMode !== undefined ? targetFacingMode : facingMode;
 
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    setIsStartingCamera(true);
+    setCameraError(null);
+    setRecognizedTickets([]);
+
+    // Stop previous streams cleanly
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+
+    let mediaStream: MediaStream | null = null;
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Tu navegador o dispositivo no soporta acceso a la cámara.');
+      setIsStartingCamera(false);
+      return false;
+    }
+
+    // Attempt 1: Specific deviceId or ideal facingMode with resolution preference
+    try {
+      const videoConstraint: MediaTrackConstraints = desiredDeviceId
+        ? { deviceId: { exact: desiredDeviceId } }
+        : {
+            facingMode: { ideal: desiredFacing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          };
+
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: videoConstraint,
+        audio: false,
+      });
+    } catch (err1: any) {
+      // Attempt 2: Flexible ideal resolution without strict exact deviceId
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: desiredFacing,
+          },
+          audio: false,
+        });
+      } catch (err2: any) {
+        // Attempt 3: Bare minimum constraint (any camera)
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        } catch (err3: any) {
+          const isDenied =
+            err3?.name === 'NotAllowedError' ||
+            err3?.name === 'PermissionDeniedError' ||
+            String(err3?.message).toLowerCase().includes('permission');
+          const isNotFound =
+            err3?.name === 'NotFoundError' ||
+            err3?.name === 'DevicesNotFoundError' ||
+            String(err3?.message).toLowerCase().includes('not found');
+
+          const errorMsg = isDenied
+            ? 'Permiso de cámara pendiente. Pulsa "Encender Cámara" y concede acceso en tu navegador.'
+            : isNotFound
+            ? 'No se detectó ninguna cámara disponible en tu dispositivo.'
+            : 'No se pudo conectar con la cámara. Comprueba los permisos de tu navegador.';
+
+          if (isExplicitUserGesture) {
+            setCameraError(errorMsg);
+            addLog(`ℹ ${errorMsg}`);
+          } else {
+            console.warn('Silent camera auto-ignition waiting for user activation:', err3?.message || err3);
+          }
+
+          setIsStartingCamera(false);
+          return false;
+        }
+      }
+    }
+
+    if (mediaStream) {
       setStream(mediaStream);
       setIsCameraActive(true);
       setIsOcrPaused(false);
-      addLog('Cámara trasera activada.');
+      setUseSimulator(false);
+      setOcrSource('camera');
+      setIsStartingCamera(false);
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        videoRef.current.play().catch(e => console.warn('Video play interrupted or rejected:', e));
+        videoRef.current.play().catch((e) => console.warn('Video play interrupted or rejected:', e));
       }
 
-      // Check if torch/flashlight is supported
-      const track = mediaStream.getVideoTracks()[0];
-      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-      if ((capabilities as any).torch) {
-        setHasTorch(true);
-      } else {
-        setHasTorch(false);
+      const activeTrack = mediaStream.getVideoTracks()[0];
+      if (activeTrack) {
+        const settings = activeTrack.getSettings ? activeTrack.getSettings() : {};
+        if (settings.deviceId) {
+          setSelectedDeviceId(settings.deviceId);
+        }
+        if (settings.facingMode) {
+          setFacingMode(settings.facingMode as 'environment' | 'user');
+        }
+        const label = activeTrack.label || (desiredFacing === 'environment' ? 'Cámara Trasera' : 'Cámara Frontal');
+        addLog(`🟢 ${label} activada y lista.`);
+
+        // Check torch capability
+        const capabilities = activeTrack.getCapabilities ? activeTrack.getCapabilities() : {};
+        if ((capabilities as any).torch) {
+          setHasTorch(true);
+        } else {
+          setHasTorch(false);
+        }
       }
-    } catch (err) {
-      console.warn('Webcam permission denied or unavailable:', err);
-      addLog('No se pudo acceder a la cámara. Iniciando Modo Simulador.');
-      setUseSimulator(true);
+
+      await refreshVideoDevices();
+      return true;
     }
+
+    setIsStartingCamera(false);
+    return false;
+  };
+
+  // Switch between cameras (Flip Rear/Front or cycle connected cameras)
+  const switchCamera = async () => {
+    if (videoDevices.length > 1) {
+      const currentIndex = videoDevices.findIndex((d) => d.deviceId === selectedDeviceId);
+      const nextIndex = (currentIndex + 1) % videoDevices.length;
+      const nextDevice = videoDevices[nextIndex];
+      if (nextDevice && nextDevice.deviceId) {
+        setSelectedDeviceId(nextDevice.deviceId);
+        await startCamera(nextDevice.deviceId);
+        return;
+      }
+    }
+
+    const nextFacing = facingMode === 'environment' ? 'user' : 'environment';
+    setFacingMode(nextFacing);
+    setSelectedDeviceId(''); // reset explicit deviceId to prioritize new facingMode
+    await startCamera('', nextFacing);
   };
 
   // Stop Camera Stream
@@ -704,18 +854,29 @@ export default function CameraOCR({
     }
   };
 
-  // Run periodic OCR check
+  // Run continuous fast OCR scanning loop with short breather
   useEffect(() => {
-    let ocrInterval: NodeJS.Timeout;
+    let isRunning = true;
+    let timerId: NodeJS.Timeout | null = null;
+
+    const tick = async () => {
+      if (!isRunning) return;
+      if ((isCameraActive || useSimulator) && !isOcrPaused && worker && !isProcessingFrameRef.current) {
+        await runOcrOnFrame();
+      }
+      if (isRunning) {
+        // High-speed loop: 60ms pause gives UI time to render and lets frames process with minimal latency
+        timerId = setTimeout(tick, 60);
+      }
+    };
 
     if ((isCameraActive || useSimulator) && !isOcrPaused && worker) {
-      ocrInterval = setInterval(async () => {
-        await runOcrOnFrame();
-      }, 950); // Fluid, continuous scan loop
+      tick();
     }
 
     return () => {
-      if (ocrInterval) clearInterval(ocrInterval);
+      isRunning = false;
+      if (timerId) clearTimeout(timerId);
     };
   }, [isCameraActive, useSimulator, isOcrPaused, worker, existingTicketNumbers, maxTicketsSimultaneous]);
 
@@ -870,30 +1031,87 @@ export default function CameraOCR({
         });
       }
 
-      // Step 5: Run specialized ticket OCR engine
-      const ocrResult = await processTicketOCR(worker, cropCanvas, {
-        contrast: s.contrast,
-        brightness: s.brightness,
-        binarizeThreshold: s.binarizeThreshold,
-        sharpenEnabled: s.sharpenEnabled,
-        noiseRemoval: s.noiseRemoval,
-        minConfidence: s.minConfidence,
-        enableSecondPass: true
-      });
+      // Step 5: Primary Recognition with Gemini 2.5 Flash, falling back silently to Tesseract OCR
+      let ocrResult: TicketOcrResult | null = null;
+      const now = Date.now();
+      const geminiThrottleMs = 700;
+      const canCallGemini = now - lastGeminiCallTimeRef.current >= geminiThrottleMs;
+
+      if (canCallGemini) {
+        lastGeminiCallTimeRef.current = now;
+        try {
+          const imageBase64 = cropCanvas.toDataURL('image/jpeg', 0.85);
+          const geminiRes = await recognizeTicketWithGemini(imageBase64);
+
+          if (geminiRes.ticketNumber && isValidTicketNumber(geminiRes.ticketNumber)) {
+            const detectedNum = geminiRes.ticketNumber;
+            const conf = Math.max(1, Math.min(100, geminiRes.confidence || 95));
+            const finalScore = conf / 100;
+            const minConfScore = (typeof s.minConfidence === 'number' && s.minConfidence > 0)
+              ? s.minConfidence / 100
+              : MIN_ACCEPTANCE_SCORE;
+            const accepted = finalScore >= minConfScore;
+
+            const candidateEval: CandidateEvaluation = {
+              candidate: detectedNum,
+              confidenceScore: conf / 100,
+              sizeScore: 1.0,
+              positionScore: 1.0,
+              contextScore: 1.0,
+              isolationScore: 1.0,
+              finalScore,
+              accepted,
+              rejectReason: accepted ? undefined : `Confianza insuficiente (${conf}% < ${Math.round(minConfScore * 100)}%)`,
+              bbox: { x0: 0, y0: 0, x1: cropWidth, y1: cropHeight },
+              lineText: `Gemini IA: #${detectedNum}`
+            };
+
+            ocrResult = {
+              detectedTicketNumber: accepted ? detectedNum : null,
+              confidence: conf,
+              topCandidate: candidateEval,
+              allCandidates: [candidateEval],
+              status: accepted ? 'detected' : 'no_detected',
+              message: accepted
+                ? `Ticket detectado por Gemini Flash: ${detectedNum} (${conf}%)`
+                : `Gemini detectó #${detectedNum} pero con confianza insuficiente (${conf}% < ${Math.round(minConfScore * 100)}%)`,
+              rawText: `[Gemini Flash] #${detectedNum}`,
+              passName: 'Gemini Flash IA'
+            };
+          }
+        } catch (geminiErr) {
+          console.warn('[CameraOCR] Gemini OCR error, falling back to Tesseract:', geminiErr);
+        }
+      }
+
+      // If Gemini returned null, threw an error, or during throttle interval, fallback to Tesseract
+      if (!ocrResult) {
+        const currentAiCorrections = getSavedOcrCorrections();
+        ocrResult = await processTicketOCR(worker, cropCanvas, {
+          contrast: s.contrast,
+          brightness: s.brightness,
+          binarizeThreshold: s.binarizeThreshold,
+          sharpenEnabled: s.sharpenEnabled,
+          noiseRemoval: s.noiseRemoval,
+          minConfidence: s.minConfidence,
+          enableSecondPass: true,
+          customCorrections: currentAiCorrections
+        });
+      }
 
       setLastOcrDiagnostic(ocrResult);
       setLastRawText(ocrResult.rawText);
 
       const readSpeedMs = Date.now() - startTime;
 
-      // Register top candidate in temporal tracker
+      // Register top candidate in temporal tracker (unified pipeline)
       const { lockedCandidate, stableCount, requiredCount } = temporalTrackerRef.current.registerCandidate(
         ocrResult.topCandidate
       );
 
-      if (ocrResult.status === 'detected' && ocrResult.topCandidate) {
+      if (ocrResult.status === 'detected' && ocrResult.topCandidate && ocrResult.topCandidate.accepted) {
         const topCand = ocrResult.topCandidate;
-        const candNum = topCand.candidate;
+        const candNum = formatTicketNumber(topCand.candidate);
         const confPct = Math.round(topCand.finalScore * 100);
 
         setLastDetectedTicket(candNum);
@@ -912,28 +1130,40 @@ export default function CameraOCR({
 
         updateStats(true, confPct, readSpeedMs);
 
-        if (lockedCandidate) {
-          const numToAdd = lockedCandidate.candidate;
+        // UNIFIED PIPELINE: Publish when locked by temporal tracker OR immediately when recognized by Gemini IA
+        const isGeminiPass = Boolean(ocrResult.passName?.includes('Gemini'));
+        const effectiveLocked = (isGeminiPass && topCand.accepted) ? topCand : lockedCandidate;
+
+        if (effectiveLocked && isValidTicketNumber(effectiveLocked.candidate)) {
+          const numToAdd = formatTicketNumber(effectiveLocked.candidate);
+          const finalConfidence = Math.round(effectiveLocked.finalScore * 100);
           const now = Date.now();
-          const cooldownMs = 2500; // Cooldown for the SAME ticket number only
+          const cooldownMs = 2500; // Anti-rebound cooldown for the SAME physical ticket number
           const lastSeen = recentDetectionsRef.current[numToAdd] || 0;
           const isDifferentTicket = lastAddedTicketRef.current !== numToAdd;
           const canAdd = isDifferentTicket || (now - lastSeen > cooldownMs);
 
-          if (canAdd && isValidTicketNumber(numToAdd)) {
+          if (canAdd) {
             recentDetectionsRef.current[numToAdd] = now;
             setRecentDetections((prev) => ({ ...prev, [numToAdd]: now }));
             lastAddedTicketRef.current = numToAdd;
 
-            if (!existingTicketNumbers.has(numToAdd)) {
+            // Check if ticket is currently ACTIVE in the system (waiting, active, pending, missing)
+            // History/delivered tickets do NOT block new tickets
+            const isAlreadyActive =
+              existingTicketNumbers.has(numToAdd) ||
+              existingTicketNumbers.has(String(parseInt(numToAdd, 10))) ||
+              existingTicketNumbers.has(numToAdd.padStart(3, '0'));
+
+            if (!isAlreadyActive) {
               onAddTicket(numToAdd, true);
-              addLog(`🟢 [OCR Éxito] Ticket #${numToAdd} detectado y publicado (Confianza: ${Math.round(lockedCandidate.finalScore * 100)}%)`);
+              addLog(`🟢 [OCR Éxito] Ticket #${numToAdd} detectado y publicado (${finalConfidence}% en ${isGeminiPass ? 1 : stableCount} fotogramas)`);
             } else {
-              addLog(`ℹ Ticket #${numToAdd} ya activo en el sistema.`);
+              addLog(`ℹ [Duplicado activo] Ticket #${numToAdd} ya se encuentra activo en el sistema.`);
             }
           }
         } else {
-          addLog(`[Validación Estabilidad] Detectado #${candNum}. Estabilizando frame (${stableCount}/${requiredCount})`);
+          addLog(`[Validación Estabilidad] Detectado #${candNum} (${confPct}%). Estabilizando (${stableCount}/${requiredCount})`);
         }
       } else {
         setRecognizedTickets([]);
@@ -1150,8 +1380,20 @@ export default function CameraOCR({
         if (ctx) {
           ctx.drawImage(img, 0, 0);
 
-          // If worker available, recognize using processTicketOCR engine
-          if (worker) {
+          // Try Gemini first on uploaded image
+          try {
+            const batchBase64 = canvas.toDataURL('image/jpeg', 0.85);
+            const geminiBatchRes = await recognizeTicketWithGemini(batchBase64);
+            if (geminiBatchRes.ticketNumber && isValidTicketNumber(geminiBatchRes.ticketNumber)) {
+              numbersFound.push(geminiBatchRes.ticketNumber);
+              maxConf = geminiBatchRes.confidence || 95;
+            }
+          } catch (e) {
+            console.warn('[Batch Upload] Gemini error:', e);
+          }
+
+          // If no number found yet and worker available, fallback to processTicketOCR engine
+          if (numbersFound.length === 0 && worker) {
             const activeProf = profiles.find(p => p.id === activeProfileId);
             const ocrRes = await processTicketOCR(worker, canvas, {
               contrast: activeProf?.contrast || contrast,
@@ -1364,14 +1606,14 @@ export default function CameraOCR({
 
           <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 gap-0.5">
             <button
-              onClick={() => {
+              onClick={async () => {
                 setOcrSource('camera');
                 setUseSimulator(false);
                 if (screenStream) stopScreenCapture();
-                if (!isCameraActive) startCamera();
+                await startCamera();
               }}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                ocrSource === 'camera' && !useSimulator ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                ocrSource === 'camera' && !useSimulator ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Camera size={14} />
@@ -1407,6 +1649,20 @@ export default function CameraOCR({
               Simulador
             </button>
           </div>
+
+          {/* Quick Flip Camera Button when in Camera Mode */}
+          {ocrSource === 'camera' && !useSimulator && isCameraActive && (
+            <button
+              onClick={switchCamera}
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-indigo-300 text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+              title={`Cambiar a ${facingMode === 'environment' ? 'Cámara Frontal' : 'Cámara Trasera'} (o siguiente cámara)`}
+            >
+              <SwitchCamera size={14} />
+              <span className="hidden sm:inline">
+                {facingMode === 'environment' ? 'Girar (Frontal)' : 'Girar (Trasera)'}
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1491,28 +1747,27 @@ export default function CameraOCR({
         <div className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-center">
           <span className="text-slate-500 text-[9px] block uppercase font-sans">Precisión</span>
           <span className="text-emerald-400 font-bold">
-            {stats.avgConfidence > 0 ? `${stats.avgConfidence}%` : '99.7%'}
+            {stats.avgConfidence > 0 ? `${stats.avgConfidence}%` : '—'}
           </span>
         </div>
         <div className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-center">
           <span className="text-slate-500 text-[9px] block uppercase font-sans">Tickets Hoy</span>
           <span className="text-amber-300 font-bold">
-            {stats.totalReads > 0 ? stats.totalReads : 245}
+            {stats.totalReads}
           </span>
         </div>
       </div>
 
       {/* Main Viewport Container */}
       <div className="relative aspect-video sm:aspect-[1.5] w-full bg-slate-950 rounded-xl overflow-hidden border border-slate-800/80 flex items-center justify-center">
-        {/* Real camera video stream */}
-        {!useSimulator && (
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            className={`w-full h-full object-cover ${isCameraActive ? 'block' : 'hidden'}`}
-          />
-        )}
+        {/* Real camera video stream - always mounted so ref is never null */}
+        <video
+          ref={videoRef}
+          playsInline
+          autoPlay
+          muted
+          className={`w-full h-full object-cover ${!useSimulator && isCameraActive ? 'block' : 'hidden'}`}
+        />
 
         {/* Ticket simulator source */}
         {useSimulator && simulatorImage && (
@@ -1607,21 +1862,53 @@ export default function CameraOCR({
 
         {/* Camera inactive overlay cover */}
         {!isCameraActive && !useSimulator && !isWorkerInitializing && (
-          <div className="absolute inset-0 bg-slate-950/85 z-20 flex flex-col items-center justify-center text-center p-6">
-            <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-full mb-3 text-slate-500">
+          <div className="absolute inset-0 bg-slate-950/90 z-20 flex flex-col items-center justify-center text-center p-6 space-y-3">
+            <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-full text-slate-400">
               <CameraOff size={32} />
             </div>
-            <p className="text-sm font-bold text-slate-300">Cámara Inactiva</p>
-            <p className="text-xs text-slate-500 max-w-xs mt-1 mb-4">
-              La cámara trasera escaneará tickets impresos de manera automática y continua.
-            </p>
-            <button
-              onClick={startCamera}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg active:scale-95 transition-all cursor-pointer flex items-center gap-2"
-            >
-              <Play size={14} />
-              Encender Cámara
-            </button>
+            <div>
+              <p className="text-sm font-bold text-slate-200">Cámara Inactiva</p>
+              {cameraError ? (
+                <p className="text-xs text-rose-400 max-w-xs mt-1 font-medium bg-rose-950/50 border border-rose-800/50 px-3 py-1.5 rounded-lg">
+                  {cameraError}
+                </p>
+              ) : (
+                <p className="text-xs text-slate-400 max-w-xs mt-1">
+                  Escaneo continuo de tickets impresos por cámara trasera o webcam.
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+              <button
+                onClick={() => startCamera()}
+                disabled={isStartingCamera}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-lg active:scale-95 transition-all cursor-pointer flex items-center gap-2"
+              >
+                {isStartingCamera ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+                <span>{isStartingCamera ? 'Conectando...' : 'Encender Cámara'}</span>
+              </button>
+
+              <button
+                onClick={switchCamera}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-semibold text-xs rounded-xl active:scale-95 transition-all cursor-pointer flex items-center gap-1.5"
+                title="Girar o probar otra cámara"
+              >
+                <SwitchCamera size={14} />
+                <span>Girar Cámara</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setOcrSource('simulator');
+                  setUseSimulator(true);
+                }}
+                className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800 text-xs rounded-xl active:scale-95 transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Activity size={14} />
+                <span>Probar Simulador</span>
+              </button>
+            </div>
           </div>
         )}
 
@@ -2477,9 +2764,9 @@ export default function CameraOCR({
         </div>
       )}
 
-      {/* Control Actions (Pause/Resume, Flashlight) */}
+      {/* Control Actions (Pause/Resume, Flashlight, Camera Switching) */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 z-20">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Pause / Resume OCR */}
           {((isCameraActive && !useSimulator) || useSimulator) && (
             <button
@@ -2496,6 +2783,37 @@ export default function CameraOCR({
               {isOcrPaused ? <Play size={14} /> : <Pause size={14} />}
               <span>{isOcrPaused ? 'Reanudar OCR' : 'Pausar OCR'}</span>
             </button>
+          )}
+
+          {/* Switch / Flip Camera */}
+          {isCameraActive && !useSimulator && (
+            <button
+              onClick={switchCamera}
+              className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-indigo-300 rounded-xl text-xs font-semibold active:scale-95 transition-all cursor-pointer flex items-center gap-1.5"
+              title={`Girar a ${facingMode === 'environment' ? 'Cámara Frontal' : 'Cámara Trasera'}`}
+            >
+              <SwitchCamera size={14} />
+              <span>{facingMode === 'environment' ? 'Girar (Frontal)' : 'Girar (Trasera)'}</span>
+            </button>
+          )}
+
+          {/* Multi-camera device selector if multiple video devices available */}
+          {isCameraActive && !useSimulator && videoDevices.length > 1 && (
+            <select
+              value={selectedDeviceId}
+              onChange={(e) => {
+                setSelectedDeviceId(e.target.value);
+                startCamera(e.target.value);
+              }}
+              className="bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-xl px-2.5 py-2 focus:border-indigo-500 outline-none cursor-pointer max-w-[160px] sm:max-w-[220px] truncate font-sans"
+              title="Seleccionar dispositivo de cámara"
+            >
+              {videoDevices.map((d, i) => (
+                <option key={d.deviceId || i} value={d.deviceId}>
+                  {d.label || `Cámara ${i + 1}`}
+                </option>
+              ))}
+            </select>
           )}
 
           {/* Flashlight/Torch */}
@@ -2520,6 +2838,22 @@ export default function CameraOCR({
               className="px-3.5 py-2 bg-red-950/40 border border-red-900/30 text-red-400 rounded-xl text-xs font-medium active:scale-95 transition-all cursor-pointer"
             >
               Apagar
+            </button>
+          )}
+
+          {/* Turn ON Real Camera button when inactive or in simulator */}
+          {(!isCameraActive || useSimulator) && (
+            <button
+              onClick={async () => {
+                setOcrSource('camera');
+                setUseSimulator(false);
+                if (screenStream) stopScreenCapture();
+                await startCamera();
+              }}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold active:scale-95 transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-indigo-600/20"
+            >
+              <Camera size={14} />
+              <span>Activar Cámara Real</span>
             </button>
           )}
         </div>

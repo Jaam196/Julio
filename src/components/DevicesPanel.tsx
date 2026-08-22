@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Laptop, Smartphone, Tv, Wifi, WifiOff, RefreshCw, Trash2, Edit2, Check, X, Copy, Info, AlertCircle, Shield, ShieldAlert, ShieldCheck
+  Laptop, Smartphone, Tv, Wifi, WifiOff, RefreshCw, Trash2, Edit2, Check, X, Copy, Info, AlertCircle, Shield, ShieldAlert, ShieldCheck, Globe, Server, Radio, Network, ExternalLink
 } from 'lucide-react';
+import { isAndroidNativeApp, triggerAndroidServerDiscovery } from '../utils/androidBridge';
 
 interface ClientDevice {
   id: string;
@@ -9,6 +10,15 @@ interface ClientDevice {
   connected: boolean;
   type?: string;
   status?: 'authorized' | 'blocked';
+}
+
+interface ServerNetworkInfo {
+  hostname: string;
+  httpPort: number;
+  primaryIp: string | null;
+  ips: { interfaceName: string; address: string; family: string }[];
+  fullUrls: string[];
+  detectedHost: string;
 }
 
 interface DevicesPanelProps {
@@ -58,8 +68,33 @@ export default function DevicesPanel({
   const [inputIP, setInputIP] = useState(serverIP);
   const [inputName, setInputName] = useState(deviceName);
   const [copied, setCopied] = useState(false);
+  const [copiedIp, setCopiedIp] = useState<string | null>(null);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
   const [editingClientName, setEditingClientName] = useState('');
+  const [serverNetworkInfo, setServerNetworkInfo] = useState<ServerNetworkInfo | null>(null);
+  const [isLoadingNetwork, setIsLoadingNetwork] = useState(false);
+
+  // Fetch PC local server IP and network interfaces
+  const fetchServerNetwork = () => {
+    setIsLoadingNetwork(true);
+    fetch('/api/server/network')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data && data.success) {
+          setServerNetworkInfo(data);
+        }
+      })
+      .catch(err => {
+        console.warn('Could not fetch server network info:', err);
+      })
+      .finally(() => {
+        setIsLoadingNetwork(false);
+      });
+  };
+
+  useEffect(() => {
+    fetchServerNetwork();
+  }, [deviceMode]);
 
   // Local state copy for immediate search button updates
   const [localRooms, setLocalRooms] = useState<{ code: string; serverName: string; clientsCount: number }[]>(availableRooms);
@@ -80,6 +115,12 @@ export default function DevicesPanel({
     navigator.clipboard.writeText(pairingCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCopyText = (text: string, identifier?: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIp(identifier || text);
+    setTimeout(() => setCopiedIp(null), 2000);
   };
 
   const handleSaveDeviceName = () => {
@@ -109,6 +150,14 @@ export default function DevicesPanel({
         : clientRole === 'pantalla' 
           ? 'public_display' 
           : 'mobile_control';
+
+  // Resolved active IP to show
+  const activePrimaryIP = serverNetworkInfo?.primaryIp 
+    ? `${serverNetworkInfo.primaryIp}:3000` 
+    : (serverIP && serverIP !== 'localhost' && serverIP !== '127.0.0.1' ? serverIP : window.location.host);
+
+  const activeHostOnly = serverNetworkInfo?.primaryIp || window.location.hostname || '127.0.0.1';
+
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-8 h-full">
@@ -383,65 +432,185 @@ export default function DevicesPanel({
         <div className="space-y-6">
           <div className="flex justify-between items-center flex-wrap gap-3">
             <div className="flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
+              <span className="relative flex h-2.5 w-2.5">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
               </span>
               <h4 className="font-bold text-sm text-slate-200">Servidor Activo (PC Principal)</h4>
+              <span className="text-[10px] font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-md">
+                Puerto 3000
+              </span>
             </div>
-            <button
-              onClick={onDisconnect}
-              className="px-3 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-lg text-xs font-bold transition-all cursor-pointer"
-            >
-              Desactivar Modo Servidor
-            </button>
+            
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchServerNetwork}
+                disabled={isLoadingNetwork}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                title="Actualizar detección de IP local"
+              >
+                <RefreshCw size={12} className={isLoadingNetwork ? 'animate-spin text-indigo-400' : ''} />
+                <span>Refrescar IP</span>
+              </button>
+              
+              <button
+                onClick={onDisconnect}
+                className="px-3 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-lg text-xs font-bold transition-all cursor-pointer"
+              >
+                Desactivar Modo Servidor
+              </button>
+            </div>
           </div>
 
+          {/* MAIN SERVER IP & PAIRING CODE CARDS */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             
-            {/* Left side: Pairing Code Display */}
-            <div className="bg-slate-950/80 border border-slate-800/80 p-6 rounded-2xl flex flex-col items-center justify-center text-center space-y-4">
-              <span className="text-xs text-slate-400 uppercase font-mono tracking-wider">Código de Emparejamiento</span>
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-4xl font-extrabold text-white tracking-widest bg-slate-900 border border-slate-800 px-5 py-3 rounded-xl shadow-inner select-all">
-                  {pairingCode || '------'}
-                </span>
-                <button
-                  onClick={handleCopyCode}
-                  className="p-3 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white rounded-xl transition-all cursor-pointer"
-                  title="Copiar código"
-                >
-                  {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
-                </button>
-              </div>
-              <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
-                Introduce este código en tus otros dispositivos para sincronizarlos al instante sin configurar puertos ni IPs.
-              </p>
-            </div>
+            {/* Card 1: Active Server IP */}
+            <div className="bg-slate-950/90 border-2 border-indigo-500/40 p-6 rounded-2xl flex flex-col justify-between space-y-4 shadow-xl shadow-indigo-950/20 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl pointer-events-none"></div>
 
-            {/* Right side: Connection Information */}
-            <div className="space-y-4 bg-slate-950/40 p-5 rounded-2xl border border-slate-800/50">
-              <h5 className="font-semibold text-xs text-indigo-400 uppercase tracking-wider">Información de Red</h5>
-              <div className="space-y-3 font-mono text-xs">
-                <div className="flex justify-between py-1 border-b border-slate-900">
-                  <span className="text-slate-400">Origen local:</span>
-                  <span className="text-slate-200">{window.location.host}</span>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-indigo-400 font-bold uppercase font-mono tracking-wider flex items-center gap-1.5">
+                    <Server size={14} />
+                    IP del Servidor Activo (PC Principal)
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Activo
+                  </span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-slate-900">
-                  <span className="text-slate-400">Seguridad:</span>
-                  <span className="text-emerald-400">WS con Handshake de Aprobación</span>
-                </div>
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-400">Audios y OCR:</span>
-                  <span className="text-amber-400">Procesados en este PC</span>
-                </div>
-              </div>
-              <div className="p-3 bg-indigo-500/5 border border-indigo-500/10 rounded-xl flex gap-2.5 items-start">
-                <Info size={14} className="text-indigo-400 mt-0.5 shrink-0" />
-                <p className="text-[11px] text-slate-400 leading-normal font-sans">
-                  Toda la base de datos se guarda en este PC. Los dispositivos conectados actúan de forma remota, ejecutando comandos en tiempo real.
+                <p className="text-xs text-slate-400">
+                  Usa esta dirección IP para vincular tablets, teléfonos o Smart TVs en tu red local:
                 </p>
               </div>
+
+              {/* Primary IP Display Block */}
+              <div className="bg-slate-900 border border-slate-700/80 p-3.5 rounded-xl flex items-center justify-between gap-3">
+                <div className="space-y-0.5 truncate">
+                  <span className="text-[10px] text-slate-500 font-mono block">IP / Host Local Principal:</span>
+                  <span className="font-mono text-xl sm:text-2xl font-black text-white tracking-wide truncate select-all block">
+                    {activePrimaryIP}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleCopyText(activePrimaryIP, 'primary_ip')}
+                  className="p-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md transition-all cursor-pointer shrink-0 flex items-center gap-1.5 text-xs font-bold"
+                  title="Copiar IP del servidor"
+                >
+                  {copiedIp === 'primary_ip' ? (
+                    <>
+                      <Check size={16} className="text-emerald-300" />
+                      <span className="hidden sm:inline text-[11px]">¡Copiado!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={16} />
+                      <span className="hidden sm:inline text-[11px]">Copiar IP</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Network Interfaces List (if detected) */}
+              {serverNetworkInfo && serverNetworkInfo.ips && serverNetworkInfo.ips.length > 0 && (
+                <div className="space-y-1.5 font-sans">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">
+                    Adaptadores de red detectados ({serverNetworkInfo.ips.length}):
+                  </span>
+                  <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                    {serverNetworkInfo.ips.map((ipInfo, idx) => {
+                      const fullIpWithPort = `${ipInfo.address}:${serverNetworkInfo.httpPort || 3000}`;
+                      const isCopiedThis = copiedIp === `iface_${idx}`;
+                      return (
+                        <div key={idx} className="flex items-center justify-between bg-slate-900/60 border border-slate-800/80 px-2.5 py-1.5 rounded-lg text-xs">
+                          <div className="flex items-center gap-2 truncate">
+                            <Network size={12} className="text-indigo-400 shrink-0" />
+                            <span className="text-slate-400 text-[11px] font-mono shrink-0">{ipInfo.interfaceName}:</span>
+                            <span className="font-mono text-slate-200 font-bold truncate">{fullIpWithPort}</span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyText(fullIpWithPort, `iface_${idx}`)}
+                            className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded transition-all cursor-pointer shrink-0"
+                            title={`Copiar ${fullIpWithPort}`}
+                          >
+                            {isCopiedThis ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Direct Web URL Link */}
+              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+                <span className="text-[11px] flex items-center gap-1.5">
+                  <Globe size={13} className="text-indigo-400" />
+                  URL directa: <code className="text-slate-200 font-mono font-bold">http://{activeHostOnly}:3000</code>
+                </span>
+                <button
+                  onClick={() => handleCopyText(`http://${activeHostOnly}:3000`, 'direct_url')}
+                  className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold cursor-pointer"
+                >
+                  {copiedIp === 'direct_url' ? '¡URL Copiada!' : 'Copiar URL'}
+                </button>
+              </div>
+            </div>
+
+            {/* Card 2: Pairing Code & Network Information */}
+            <div className="space-y-4 flex flex-col justify-between">
+              
+              {/* Pairing Code Box */}
+              <div className="bg-slate-950/80 border border-slate-800/80 p-5 rounded-2xl flex flex-col items-center justify-center text-center space-y-3">
+                <span className="text-xs text-slate-400 uppercase font-mono tracking-wider">Código de Emparejamiento</span>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-3xl sm:text-4xl font-extrabold text-white tracking-widest bg-slate-900 border border-slate-800 px-5 py-2.5 rounded-xl shadow-inner select-all">
+                    {pairingCode || '------'}
+                  </span>
+                  <button
+                    onClick={handleCopyCode}
+                    className="p-3 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white rounded-xl transition-all cursor-pointer"
+                    title="Copiar código"
+                  >
+                    {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+                  Introduce este código en tus otros dispositivos para sincronizarlos al instante por Wi-Fi.
+                </p>
+              </div>
+
+              {/* Network Information Box */}
+              <div className="space-y-3 bg-slate-950/40 p-4 rounded-2xl border border-slate-800/50 text-xs">
+                <h5 className="font-semibold text-xs text-indigo-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Shield size={13} />
+                  Información de Red del Servidor
+                </h5>
+                <div className="space-y-2 font-mono text-xs">
+                  <div className="flex justify-between py-1 border-b border-slate-900">
+                    <span className="text-slate-400">IP Activa:</span>
+                    <span className="text-emerald-400 font-bold">{activePrimaryIP}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-900">
+                    <span className="text-slate-400">Nombre de Host PC:</span>
+                    <span className="text-slate-200">{serverNetworkInfo?.hostname || 'PC Servidor Principal'}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-900">
+                    <span className="text-slate-400">Puerto WebSocket / HTTP:</span>
+                    <span className="text-indigo-400 font-bold">3000</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-900">
+                    <span className="text-slate-400">Descubrimiento UDP:</span>
+                    <span className="text-emerald-400 font-bold">Puerto 45678 (Auto-Detect)</span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-slate-400">Audios y Base de Datos:</span>
+                    <span className="text-amber-400 font-bold">Local en este PC</span>
+                  </div>
+                </div>
+              </div>
+
             </div>
 
           </div>
@@ -694,6 +863,9 @@ export default function DevicesPanel({
                           btnIcon.classList.add('animate-spin');
                           setTimeout(() => btnIcon.classList.remove('animate-spin'), 1000);
                         }
+                        if (isAndroidNativeApp()) {
+                          triggerAndroidServerDiscovery();
+                        }
                         fetch('/api/rooms')
                           .then(res => res.json())
                           .then(data => {
@@ -900,19 +1072,28 @@ export default function DevicesPanel({
             </div>
           </div>
 
-          {/* Item 2: Active Port */}
-          <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl flex flex-col justify-between space-y-1">
-            <span className="text-[10px] text-slate-500 uppercase font-mono tracking-wider">Puerto Activo</span>
-            <span className="font-mono text-slate-300 font-bold mt-0.5">
-              3000 <span className="text-[10px] text-slate-500 font-normal font-sans">(Reverse Proxy)</span>
+          {/* Item 2: IP Servidor Activo */}
+          <div className="p-3 bg-slate-950/60 border border-indigo-500/30 rounded-xl flex flex-col justify-between space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-indigo-400 uppercase font-mono tracking-wider font-bold">IP Servidor Activo</span>
+              <button
+                onClick={() => handleCopyText(activePrimaryIP, 'diag_ip')}
+                className="text-slate-400 hover:text-indigo-300 p-0.5 rounded cursor-pointer"
+                title="Copiar IP"
+              >
+                {copiedIp === 'diag_ip' ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+              </button>
+            </div>
+            <span className="font-mono text-emerald-400 font-extrabold truncate mt-0.5" title={activePrimaryIP}>
+              {activePrimaryIP}
             </span>
           </div>
 
-          {/* Item 3: Detected Network */}
+          {/* Item 3: Active Port */}
           <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl flex flex-col justify-between space-y-1">
-            <span className="text-[10px] text-slate-500 uppercase font-mono tracking-wider">Red Detectada</span>
-            <span className="font-mono text-slate-300 font-bold truncate mt-0.5" title={window.location.host}>
-              {window.location.host}
+            <span className="text-[10px] text-slate-500 uppercase font-mono tracking-wider">Puerto Activo</span>
+            <span className="font-mono text-slate-300 font-bold mt-0.5">
+              3000 <span className="text-[10px] text-slate-500 font-normal font-sans">(HTTP / WS)</span>
             </span>
           </div>
 

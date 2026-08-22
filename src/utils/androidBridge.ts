@@ -14,18 +14,32 @@ declare global {
       requestScreenCapturePermission: () => void;
       startScreenCaptureService: () => void;
       stopScreenCaptureService: () => void;
+      startContinuousCapture?: (intervalMs: number) => void;
+      stopContinuousCapture?: () => void;
       isNativeAndroidAvailable: () => boolean;
       postTicketToNative: (ticketNumber: string) => void;
+      discoverServerOnNetwork?: () => void;
     };
     onAndroidScreenCapturePermissionGranted?: () => void;
     onAndroidScreenCapturePermissionDenied?: (reason: string) => void;
     onAndroidFrameReceived?: (base64ImageData: string) => void;
+    onServerDiscovered?: (ip: string, httpPort: number) => void;
+    onServerDiscoveryFailed?: () => void;
   }
 }
 
 // Check if running inside Android Native app with WebView bridge
 export const isAndroidNativeApp = (): boolean => {
   return typeof window !== 'undefined' && !!window.AndroidBridge && typeof window.AndroidBridge.isNativeAndroidAvailable === 'function' && window.AndroidBridge.isNativeAndroidAvailable();
+};
+
+// Trigger UDP native discovery of PC Server on the local WiFi network
+export const triggerAndroidServerDiscovery = (): boolean => {
+  if (typeof window !== 'undefined' && window.AndroidBridge && typeof window.AndroidBridge.discoverServerOnNetwork === 'function') {
+    window.AndroidBridge.discoverServerOnNetwork();
+    return true;
+  }
+  return false;
 };
 
 // Check if web browser supports getDisplayMedia (Screen Capture API)

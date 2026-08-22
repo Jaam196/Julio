@@ -16,6 +16,7 @@ import { ThemeSettings } from './ThemeSettings';
 import { DeviceLayoutSettings } from './DeviceLayoutSettings';
 import { exportAppDocumentationAndPromptPDF } from '../utils/export';
 import { runMultiZoneDuplicateTest } from '../utils/ticketUtils';
+import { HioposScreenScanner } from './HioposScreenScanner';
 
 const DISPLAY_TRANSLATIONS: Record<string, {
   defaultTitle: string;
@@ -1187,16 +1188,19 @@ export default function SettingsPanel({
         {/* HIOPOS TAB */}
         {subTab === 'hiopos' && (
           <div className="space-y-6 animate-fade-in">
-            {/* Header */}
+            {/* LECTOR CONTINUO DE PANTALLA HIOPOS Y CALIBRACIÓN ROI */}
+            <HioposScreenScanner />
+
+            {/* Header & Server Status */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
               <div className="flex items-center gap-3 border-b border-slate-800 pb-4 mb-4">
-                <div className="p-3 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
+                <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
                   <Zap size={24} />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-100 text-xl tracking-tight">INTEGRACIÓN HIOPOS</h3>
+                  <h3 className="font-bold text-slate-100 text-xl tracking-tight">ESTADO DEL SERVIDOR HIOPOS</h3>
                   <p className="text-xs text-slate-400">
-                    Recepción automática de números de ticket desde la aplicación Android que lee HIOPOS.
+                    Sincronización en tiempo real del endpoint REST y WebSocket del servidor.
                   </p>
                 </div>
               </div>

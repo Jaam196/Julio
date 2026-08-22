@@ -13,7 +13,8 @@ import {
 } from './utils/db';
 import { speakText, playNotificationSound, triggerVibration, formatAnnouncementText } from './utils/audio';
 import { buildWsUrl, buildApiUrl } from './utils/urlHelper';
-import { getTicketZones, isTicketFullyCompleted, isDuplicateTicket, getTicketZoneKey, normalizeZone, sanitizeAndMergeTickets, getPendingZones } from './utils/ticketUtils';
+import { getTicketZones, isTicketFullyCompleted, isDuplicateTicket, getTicketZoneKey, normalizeZone, sanitizeAndMergeTickets, getPendingZones, getActiveTicketNumbers } from './utils/ticketUtils';
+import { getSavedOcrCorrections } from './utils/ticketCandidateScorer';
 
 import ManualInput from './components/ManualInput';
 import ActiveTicket from './components/ActiveTicket';
@@ -37,6 +38,7 @@ import { matchesShortcut, shouldProcessShortcut, SHORTCUT_NAMES } from './utils/
 import { AnimatePresence, motion } from 'motion/react';
 import { getThemeConfig, applyThemeVariables, findThemeById } from './utils/themeController';
 import { useDeviceLayout } from './utils/deviceLayoutController';
+import { isAndroidNativeApp, triggerAndroidServerDiscovery } from './utils/androidBridge';
 
 const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   lang: 'es',
@@ -125,6 +127,8 @@ const DEFAULT_MUSIC_CONFIG: MusicConfig = {
   integratedUrl: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
   integratedVolume: 80,
 };
+
+const ACTIVE_TICKET_TIMEOUT_MS = 60 * 60 * 1000; // 1 hora (60 minutos)
 
 export default function App() {
   // Device layout controller (Independent for PC, Tablet, and Mobile)
@@ -1313,12 +1317,6 @@ export default function App() {
       case 'call_ticket_now':
         handleCallTicketNow(payload.id);
         break;
-      case 'add_direct_waiting':
-        handleAddDirectWaitingTicket(payload.number);
-        break;
-      case 'add_direct_pending':
-        handleAddDirectPendingTicket(payload.number);
-        break;
       case 'return_to_waiting':
         handleReturnToWaiting(payload.id);
         break;
@@ -1575,6 +1573,59 @@ export default function App() {
       });
     });
   }, [authorizedDevices]);
+
+  // Register Android Native Server Discovery Callbacks
+  useEffect(() => {
+    window.onServerDiscovered = (ip: string, httpPort: number) => {
+      const port = httpPort || 3000;
+      const targetHost = ip.includes(':') ? ip : `${ip}:${port}`;
+      console.log(`[Android Native Discovery] Server found at ${targetHost}`);
+      
+      setServerIP(targetHost);
+      localStorage.setItem('serverIP', targetHost);
+      triggerConfigSavedToast(`✔ Servidor PC detectado en ${targetHost}`);
+
+      // Query rooms on the discovered server to auto-connect
+      fetch(buildApiUrl(targetHost, '/api/rooms'))
+        .then(res => (res.ok ? res.json() : null))
+        .then(data => {
+          if (data && data.rooms && data.rooms.length > 0) {
+            const discoveredCode = data.rooms[0].code;
+            setPairingCode(discoveredCode);
+            localStorage.setItem('pairedCode', discoveredCode);
+            connectWebSocket('client', discoveredCode, targetHost, true);
+          } else {
+            const currentCode = localStorage.getItem('pairedCode') || pairingCode || '100000';
+            connectWebSocket('client', currentCode, targetHost, true);
+          }
+        })
+        .catch(() => {
+          const currentCode = localStorage.getItem('pairedCode') || pairingCode || '100000';
+          connectWebSocket('client', currentCode, targetHost, true);
+        });
+    };
+
+    window.onServerDiscoveryFailed = () => {
+      console.log('[Android Native Discovery] No server found on local network via UDP.');
+      setPairingStatus('unpaired');
+      triggerConfigSavedToast('No se detectó el servidor automáticamente. Puedes ingresar la IP manual.');
+    };
+
+    // If running inside Android Native app and no custom server IP has been saved yet
+    if (isAndroidNativeApp()) {
+      const savedIP = localStorage.getItem('serverIP');
+      if (!savedIP || savedIP === 'localhost' || savedIP === '127.0.0.1' || savedIP.includes('file://')) {
+        console.log('[Android Native] Triggering auto-discovery on startup...');
+        setPairingStatus('searching');
+        triggerAndroidServerDiscovery();
+      }
+    }
+
+    return () => {
+      window.onServerDiscovered = undefined;
+      window.onServerDiscoveryFailed = undefined;
+    };
+  }, []);
 
   // Establish initial connections on start
   useEffect(() => {
@@ -2206,6 +2257,68 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isAutonomousMode, isAutoCallActive, isWaitlistPaused, deviceMode]);
 
+  // Auto-missing timeout loop for active tickets (> 1 hour active duration)
+  useEffect(() => {
+    if (deviceMode === 'client') return;
+
+    const interval = setInterval(async () => {
+      const now = Date.now();
+      const currentTickets = ticketsRef.current;
+      
+      const expiredTickets = currentTickets.filter((t) => {
+        if (t.status !== 'active') return false;
+        const activeStartTime = t.recoveredAt || t.completedAt || t.createdAt || 0;
+        return (now - activeStartTime) > ACTIVE_TICKET_TIMEOUT_MS;
+      });
+
+      if (expiredTickets.length === 0) return;
+
+      const expiredIds = new Set(expiredTickets.map((t) => t.id));
+      const updatedTickets = currentTickets.map((t) => {
+        if (expiredIds.has(t.id)) {
+          return {
+            ...t,
+            status: 'missing' as const,
+            completedAt: now,
+          };
+        }
+        return t;
+      });
+
+      setTickets(updatedTickets);
+
+      // Persist modified tickets in bulk
+      const modifiedToSave = updatedTickets.filter((t) => expiredIds.has(t.id));
+      await dbSaveTicketsBulk(modifiedToSave);
+
+      // Check if current activeTicket is among the expired tickets
+      if (activeTicketRef.current && expiredIds.has(activeTicketRef.current.id)) {
+        const remainingActive = updatedTickets.filter((t) => t.status === 'active');
+        if (remainingActive.length > 0) {
+          const newest = [...remainingActive].sort((a, b) => {
+            const tA = a.completedAt || a.createdAt || 0;
+            const tB = b.completedAt || b.createdAt || 0;
+            return tB - tA;
+          })[0];
+          setActiveTicket(newest);
+          setAnnouncementCount(1);
+        } else {
+          setActiveTicket(null);
+          setAnnouncementCount(0);
+        }
+      }
+
+      // Log each auto-marked ticket on server console
+      expiredTickets.forEach((t) => {
+        if (deviceMode === 'server') {
+          addServerLog(`Ticket #${t.number} marcado automáticamente como desaparecido (>1h activo).`, 'warn');
+        }
+      });
+    }, 60000); // Check every 60 seconds
+
+    return () => clearInterval(interval);
+  }, [deviceMode]);
+
   const handleKeyDownRef = useRef<any>(null);
 
   // 4. Global keyboard shortcuts handler using a ref to prevent stale closures
@@ -2641,16 +2754,21 @@ export default function App() {
         const waitingList = updatedTickets.filter((t) => t.status === 'waiting');
         if (waitingList.length > 0 && appConfig.autoActivateFirstTicket !== false) {
           const nextWaiting = waitingList[0];
-          nextWaiting.status = 'active';
-          nextWaiting.completedAt = Date.now();
-          await dbSaveTicket(nextWaiting);
-          setActiveTicket(nextWaiting);
+          const promotedWaiting: Ticket = {
+            ...nextWaiting,
+            status: 'active',
+            completedAt: Date.now(),
+          };
+          await dbSaveTicket(promotedWaiting);
+          updatedTickets = updatedTickets.map((t) => (t.id === nextWaiting.id ? promotedWaiting : t));
+          setTickets(updatedTickets);
+          setActiveTicket(promotedWaiting);
           setAnnouncementCount(1);
 
           if (voiceSettings.soundEnabled) {
             playNotificationSound();
           }
-          const msg = formatAnnouncementText(nextWaiting.number, voiceSettings, 1);
+          const msg = formatAnnouncementText(promotedWaiting.number, voiceSettings, 1);
           speakText(msg, voiceSettings);
         } else {
           setActiveTicket(null);
@@ -3387,10 +3505,11 @@ export default function App() {
     if (sendClientAction('delete_ticket', { id })) return;
     await dbDeleteTicket(id);
 
-    const updatedTickets = tickets.filter((t) => t.id !== id);
+    const currentTickets = ticketsRef.current;
+    const updatedTickets = currentTickets.filter((t) => t.id !== id);
     setTickets(updatedTickets);
 
-    if (activeTicket && activeTicket.id === id) {
+    if (activeTicketRef.current && activeTicketRef.current.id === id) {
       const remainingActive = updatedTickets.filter((t) => t.status === 'active');
       if (remainingActive.length > 0) {
         const newest = [...remainingActive].sort((a, b) => {
@@ -3401,8 +3520,23 @@ export default function App() {
         setActiveTicket(newest);
         setAnnouncementCount(1);
       } else {
-        setActiveTicket(null);
-        setAnnouncementCount(0);
+        const waitingList = updatedTickets.filter((t) => t.status === 'waiting');
+        if (waitingList.length > 0 && appConfigRef.current?.autoActivateFirstTicket !== false) {
+          const nextWaiting = waitingList[0];
+          const promotedWaiting: Ticket = {
+            ...nextWaiting,
+            status: 'active',
+            completedAt: Date.now(),
+          };
+          await dbSaveTicket(promotedWaiting);
+          const finalTickets = updatedTickets.map((t) => (t.id === nextWaiting.id ? promotedWaiting : t));
+          setTickets(finalTickets);
+          setActiveTicket(promotedWaiting);
+          setAnnouncementCount(1);
+        } else {
+          setActiveTicket(null);
+          setAnnouncementCount(0);
+        }
       }
     }
     forceRefocusInput();
@@ -3441,11 +3575,13 @@ export default function App() {
 
   const handleClearReadyList = async () => {
     if (sendClientAction('clear_ready_list', {})) return;
-    const ready = tickets.filter((t) => t.status === 'active');
+    const ready = ticketsRef.current.filter((t) => t.status === 'active');
     for (const t of ready) {
       await dbDeleteTicket(t.id);
     }
     setTickets((prev) => prev.filter((t) => t.status !== 'active'));
+    setActiveTicket(null);
+    setAnnouncementCount(0);
     triggerConfigSavedToast('Lista de pedidos listos vaciada.');
   };
 
@@ -4274,7 +4410,7 @@ export default function App() {
                   {/* Escáner OCR Compacto */}
                   <CameraOCR
                     onAddTicket={handleAddTicket}
-                    existingTicketNumbers={new Set(tickets.map((t) => t.number))}
+                    existingTicketNumbers={getActiveTicketNumbers(tickets)}
                     maxTicketsSimultaneous={appConfig.maxOcrSimultaneous}
                     isOcrPausedProps={isOcrPaused}
                     onToggleOcrPauseProps={setIsOcrPaused}
@@ -4297,13 +4433,13 @@ export default function App() {
                           <Brain size={16} />
                         </div>
                         <div>
-                          <h4 className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--theme-text, #f8fafc)' }}>IA OCR AUTÓNOMA</h4>
-                          <p className="text-[10px]" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Motor de aprendizaje continuo</p>
+                          <h4 className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--theme-text, #f8fafc)' }}>IA OCR ADAPTATIVA</h4>
+                          <p className="text-[10px]" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Motor de corrección conectado</p>
                         </div>
                       </div>
                       <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        Aprendizaje: Activo
+                        Diccionario: Activo
                       </span>
                     </div>
 
@@ -4315,8 +4451,8 @@ export default function App() {
                           borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
                         }}
                       >
-                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Tickets aprendidos</span>
-                        <span className="text-indigo-300 font-bold">5420</span>
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Tickets totales</span>
+                        <span className="text-indigo-300 font-bold">{tickets.length}</span>
                       </div>
                       <div 
                         className="p-2 rounded-xl border"
@@ -4325,8 +4461,8 @@ export default function App() {
                           borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
                         }}
                       >
-                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Correcciones</span>
-                        <span className="text-amber-400 font-bold">31</span>
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Reglas IA</span>
+                        <span className="text-amber-400 font-bold">{Object.keys(getSavedOcrCorrections()).length}</span>
                       </div>
                       <div 
                         className="p-2 rounded-xl border"
@@ -4335,8 +4471,8 @@ export default function App() {
                           borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
                         }}
                       >
-                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Precisión</span>
-                        <span className="text-emerald-400 font-bold">99.7%</span>
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>En Espera</span>
+                        <span className="text-emerald-400 font-bold">{waitingTickets.length}</span>
                       </div>
                       <div 
                         className="p-2 rounded-xl border"
@@ -4345,8 +4481,8 @@ export default function App() {
                           borderColor: 'var(--theme-card-border, rgba(255, 255, 255, 0.1))',
                         }}
                       >
-                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Velocidad</span>
-                        <span className="text-emerald-300 font-bold">1.3 t/seg</span>
+                        <span className="text-[9px] block uppercase opacity-60" style={{ color: 'var(--theme-text-muted, #94a3b8)' }}>Llamados</span>
+                        <span className="text-emerald-300 font-bold">{tickets.filter(t => t.status === 'active').length}</span>
                       </div>
                     </div>
                   </div>
@@ -4444,7 +4580,7 @@ export default function App() {
                 <div className="lg:col-span-8">
                   <CameraOCR
                     onAddTicket={handleAddTicket}
-                    existingTicketNumbers={new Set(tickets.map((t) => t.number))}
+                    existingTicketNumbers={getActiveTicketNumbers(tickets)}
                     maxTicketsSimultaneous={appConfig.maxOcrSimultaneous}
                     isOcrPausedProps={isOcrPaused}
                     onToggleOcrPauseProps={setIsOcrPaused}

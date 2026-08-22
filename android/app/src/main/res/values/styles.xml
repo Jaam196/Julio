@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TicketManager" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">@color/indigo_500</item>
+        <item name="colorPrimaryDark">@color/slate_900</item>
+        <item name="colorAccent">@color/teal_200</item>
+        <item name="android:windowBackground">@color/slate_900</item>
+    </style>
+</resources>

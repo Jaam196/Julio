@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Tv, Wifi, WifiOff, X, Maximize, Minimize, Activity, AlertCircle, CheckCircle, Clock, Terminal, Settings } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Ticket, AppConfig } from '../types';
-import { ResolvedImage, ResolvedVideo } from './ResolvedMedia';
+import { isActiveTicket } from '../utils/ticketUtils';
+import { BackgroundVideo } from './BackgroundVideo';
 
 interface PublicDisplayViewProps {
   activeTicket: Ticket | null;
@@ -412,7 +413,13 @@ export default function PublicDisplayView({
     numberSizeClassList = 'text-5xl sm:text-6xl md:text-7xl';
   }
 
-  // Filter and sort ready tickets
+  // Centralized active tickets evaluation (waiting, active, pending, missing)
+  // Delivered, deleted_pending, and archived tickets are strictly excluded.
+  const activeTicketsList = (tickets || []).filter(isActiveTicket);
+  const isMainTicketActive = isActiveTicket(activeTicket);
+  const hasActiveTickets = isMainTicketActive || activeTicketsList.length > 0;
+
+  // Filter and sort ready tickets specifically for the public display board (status === 'active')
   const readyTickets = (tickets || []).filter(t => t.status === 'active');
   const sortedReadyTickets = [...readyTickets].sort((a, b) => {
     const timeA = a.completedAt || a.createdAt || 0;
@@ -420,21 +427,27 @@ export default function PublicDisplayView({
     return timeB - timeA; // newest first
   });
 
-  // Determine the main ticket to show
-  const mainTicket = activeTicket || (sortedReadyTickets.length > 0 ? sortedReadyTickets[0] : null);
+  // Determine the main ticket to show on the public display
+  const mainTicket = (activeTicket && isMainTicketActive)
+    ? activeTicket
+    : (sortedReadyTickets.length > 0 ? sortedReadyTickets[0] : null);
 
   // Remaining ready tickets in the sidebar/bottom list (excluding the main one)
   const otherReadyTickets = mainTicket 
     ? sortedReadyTickets.filter(t => t.id !== mainTicket.id)
     : sortedReadyTickets;
 
-  // Determine is Standby Slideshow currently active
-  const hasReadyTickets = sortedReadyTickets.length > 0 || !!mainTicket;
-  const isStandbyActive = !hasReadyTickets && appConfig.publicDisplayStandbyEnabled && activeSlides.length > 0;
+  // Determine if Standby Slideshow is currently active
+  const hasDisplayTickets = sortedReadyTickets.length > 0 || !!mainTicket;
+  const isStandbyActive = !hasDisplayTickets && Boolean(appConfig.publicDisplayStandbyEnabled) && activeSlides.length > 0;
   const currentSlide = isStandbyActive ? activeSlides[currentSlideIndex] : null;
 
-  // Determine if background overrides (video/image) should be shown
-  const showBgOverride = !isStandbyActive && (!mainTicket || !appConfig.publicDisplayHideBgOnActive);
+  // Option "Sustituir temporalmente el fondo al mostrar un Ticket Activo" (publicDisplayHideBgOnActive):
+  // When enabled (true) and AT LEAST ONE active ticket exists in the system:
+  // hide the media background smoothly (opacity: 0) to reveal the solid theme background.
+  // When all active tickets are delivered/cleared or when disabled: show the media background (opacity: 100).
+  const shouldHideMediaBg = Boolean(appConfig.publicDisplayHideBgOnActive && hasActiveTickets);
+  const showMediaBackground = !shouldHideMediaBg;
 
   // Helper function to color ticket numbers based on age/recency
   const getTicketColor = (ticket: Ticket) => {
@@ -979,42 +992,33 @@ export default function PublicDisplayView({
     >
       <style dangerouslySetInnerHTML={{ __html: fontStyles }} />
 
-      {/* Background Permanent Layer (Completely Independent from Ticket State) */}
-      {isStandbyActive && currentSlide ? (
-        <div className="absolute inset-0 w-full h-full z-0">
-          <ResolvedImage
-            mediaKeyOrUrl={currentSlide.url}
-            onMediaMissing={() => onMediaMissing?.(`standby_image_${currentSlide.id}`)}
-            className="w-full h-full"
-            style={{ objectFit: appConfig.publicDisplayStandbyFit || 'cover' }}
-            alt="Standby view"
-            referrerPolicy="no-referrer"
-          />
-        </div>
-      ) : shouldRenderVideo && currentVideoUrl ? (
-        <ResolvedVideo 
-          mediaKeyOrUrl={currentVideoUrl}
-          onMediaMissing={() => onMediaMissing?.(currentVideo ? `bg_video_${currentVideo.id}` : 'bg_video')}
-          autoPlay
-          loop={activeVideos.length <= 1}
-          onEnded={handleVideoEnded}
-          muted
-          playsInline
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none z-0"
-          style={{ opacity: 1 }}
+      {/* Background Permanent Layer - Stays permanently mounted to prevent video buffer loss or playback restart */}
+      <div 
+        className={`absolute inset-0 w-full h-full pointer-events-none z-0 transition-opacity duration-700 ease-in-out ${
+          showMediaBackground ? 'opacity-100' : 'opacity-0'
+        }`}
+        style={{
+          transitionProperty: 'opacity',
+          transitionDuration: '650ms',
+        }}
+      >
+        <BackgroundVideo
+          bgType={appConfig.publicDisplayBgType}
+          bgVideo={appConfig.publicDisplayBgVideo}
+          bgVideos={appConfig.publicDisplayBgVideos}
+          bgImage={appConfig.publicDisplayBgImage}
+          standbyEnabled={appConfig.publicDisplayStandbyEnabled}
+          standbyImages={appConfig.publicDisplayStandbyImages}
+          standbyDuration={appConfig.publicDisplayStandbyDuration}
+          standbyFit={appConfig.publicDisplayStandbyFit}
+          showStandbyOverlay={!hasDisplayTickets}
+          isVisible={showMediaBackground}
+          onMediaMissing={onMediaMissing}
         />
-      ) : (appConfig.publicDisplayBgType === 'image' || (!appConfig.publicDisplayBgType && appConfig.publicDisplayBgImage)) && appConfig.publicDisplayBgImage ? (
-        <ResolvedImage 
-          mediaKeyOrUrl={appConfig.publicDisplayBgImage}
-          onMediaMissing={() => onMediaMissing?.('bg_image')}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-40 z-0"
-          alt="Public display bg"
-          referrerPolicy="no-referrer"
-        />
-      ) : null}
+      </div>
 
-      {/* Background ambient light - subtle glow matching number color */}
-      {!isStandbyActive && (
+      {/* Background ambient light - subtle glow matching number color when solid theme background is shown */}
+      {!isStandbyActive && shouldHideMediaBg && (
         <div 
           className="absolute inset-0 pointer-events-none opacity-[0.05] z-5"
           style={{
